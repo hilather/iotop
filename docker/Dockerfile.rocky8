@@ -1,0 +1,30 @@
+# Rocky Linux 8 build + debug image for iotop-c segfault hunting.
+# Matches the environment where occasional crashes were reported.
+FROM rockylinux:8
+
+RUN dnf -y update && dnf -y install \
+        gcc \
+        make \
+        pkgconfig \
+        ncurses-devel \
+        gdb \
+        valgrind \
+        strace \
+        which \
+        procps-ng \
+        util-linux \
+        findutils \
+        git \
+        glibc-devel \
+        libasan \
+        libubsan \
+    && dnf clean all
+
+WORKDIR /src
+
+# Host source is bind-mounted at runtime; image only provides the toolchain.
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["help"]

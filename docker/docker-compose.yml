@@ -1,0 +1,26 @@
+# Rocky Linux 8 debug environment for iotop segfault reproduction.
+#
+# Requires Docker group access on the host. Privileged + host PID/network so
+# taskstats netlink and /proc match a real system (iotop needs this).
+services:
+  iotop:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rocky8
+    image: iotop-rocky8:debug
+    # Host process table + netlink taskstats (same as running on the machine)
+    pid: host
+    network_mode: host
+    privileged: true
+    working_dir: /src
+    volumes:
+      - ..:/src
+      # Optional: persist cores
+      - ./cores:/tmp/cores
+    environment:
+      - NO_FLTO=1
+      - CFLAGS=-O0 -g -fno-omit-frame-pointer
+      - ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0
+      - UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+    # Default: show help
+    command: ["help"]

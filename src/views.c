@@ -525,7 +525,8 @@ inline int iotop_sort_cb(const void *a,const void *b) {
 	static int grlen=0;
 	int res=0;
 
-	if (1 || !a) {
+	/* Setup call: arr_sort may pass a=NULL to configure graph history length. */
+	if (!a) {
 		grlen=(long)b;
 		return 0;
 	}
@@ -550,14 +551,18 @@ inline int iotop_sort_cb(const void *a,const void *b) {
 		case SORT_BY_PRIO:
 			res=pa->io_prio-pb->io_prio;
 			break;
-		case SORT_BY_COMMAND:
-			res=strcmp(config.f.fullcmdline?pa->cmdline2:pa->cmdline1,config.f.fullcmdline?pb->cmdline2:pb->cmdline1);
+		case SORT_BY_COMMAND: {
+			const char *ca = config.f.fullcmdline ? pa->cmdline2 : pa->cmdline1;
+			const char *cb = config.f.fullcmdline ? pb->cmdline2 : pb->cmdline1;
+			res = strcmp(ca ? ca : "", cb ? cb : "");
 			break;
+		}
 		case SORT_BY_PID:
 			res=pa->tid-pb->tid;
 			break;
 		case SORT_BY_USER:
-			res=strcmp(pa->pw_name,pb->pw_name);
+			/* pw_name may be NULL in the stripped/performance build path */
+			res=strcmp(pa->pw_name ? pa->pw_name : "", pb->pw_name ? pb->pw_name : "");
 			break;
 		case SORT_BY_READ:
 			if (config.f.accumulated)

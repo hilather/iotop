@@ -163,47 +163,67 @@ inline int nl_xxxid_info(pid_t tid,pid_t pid,struct xxxid_stats *stats) {
 
 	rv=GENLMSG_PAYLOAD(&msg.n);
 
-	struct nlattr *na=(struct nlattr *)GENLMSG_DATA(&msg);
-	int len=0;
+	{
+		char *genl_base=(char *)GENLMSG_DATA(&msg);
+		int len=0;
 
-	while (len<rv) {
-		len+=NLA_ALIGN(na->nla_len);
+		while (len<rv) {
+			struct nlattr *na=(struct nlattr *)(genl_base+len);
 
-		if (na->nla_type==TASKSTATS_TYPE_AGGR_TGID||na->nla_type==TASKSTATS_TYPE_AGGR_PID) {
-			int aggr_len=NLA_PAYLOAD(na->nla_len);
-			int len2=0;
+			if (na->nla_type==TASKSTATS_TYPE_AGGR_TGID||na->nla_type==TASKSTATS_TYPE_AGGR_PID) {
+				int aggr_len=NLA_PAYLOAD(na->nla_len);
+				char *nested_base=(char *)NLA_DATA(na);
+				int len2=0;
 
-			na=(struct nlattr *)NLA_DATA(na);
-			while (len2<aggr_len) {
-				if (na->nla_type==TASKSTATS_TYPE_STATS) {
-					struct taskstats *ts=NLA_DATA(na);
+				while (len2<aggr_len) {
+					struct nlattr *nna=(struct nlattr *)(nested_base+len2);
 
-					#define COPY(field) { stats->field = ts->field; }
-					COPY(read_bytes);
-					COPY(write_bytes);
-					COPY(ac_ppid);					
-					COPY(swapin_delay_total);
-					COPY(blkio_delay_total);
-					COPY(cancelled_write_bytes);
-					COPY(ac_utime);
-					COPY(ac_stime);
-					COPY(ac_majflt);
-					COPY(coremem);
-					COPY(hiwater_rss);
-					COPY(freepages_delay_total);
-					COPY(ac_btime);
-					COPY(ac_etime);
-					COPY(cpu_delay_total);
-					COPY(ac_etime);
-					#undef COPY
-					stats->euid=ts->ac_uid;
-					stats->cmdline1=strdup(ts->ac_comm);
+					if (nna->nla_type==TASKSTATS_TYPE_STATS) {
+						/*
+						 * NLA_DATA is only 4-byte aligned; struct taskstats needs
+						 * 8-byte alignment for u64 fields. Dereferencing the raw
+						 * pointer is UB (UBSan: misaligned-address) and can SIGBUS
+						 * on strict-alignment arches. Copy into a local object.
+						 */
+						struct taskstats ts;
+						size_t payload=NLA_PAYLOAD(nna->nla_len);
+						size_t ncopy=payload<sizeof ts?payload:sizeof ts;
+
+						memset(&ts,0,sizeof ts);
+						memcpy(&ts,NLA_DATA(nna),ncopy);
+
+						#define COPY(field) { stats->field = ts.field; }
+						COPY(read_bytes);
+						COPY(write_bytes);
+						COPY(ac_ppid);
+						COPY(swapin_delay_total);
+						COPY(blkio_delay_total);
+						COPY(cancelled_write_bytes);
+						COPY(ac_utime);
+						COPY(ac_stime);
+						COPY(ac_majflt);
+						COPY(coremem);
+						COPY(hiwater_rss);
+						COPY(freepages_delay_total);
+						COPY(ac_btime);
+						COPY(ac_etime);
+						COPY(cpu_delay_total);
+						#undef COPY
+						stats->euid=ts.ac_uid;
+						/* ac_comm is a fixed char array inside taskstats */
+						if (stats->cmdline1)
+							free(stats->cmdline1);
+						stats->cmdline1=strndup(ts.ac_comm,sizeof ts.ac_comm);
+					}
+					if (nna->nla_len<NLA_HDRLEN)
+						break;
+					len2+=NLA_ALIGN(nna->nla_len);
 				}
-				len2+=NLA_ALIGN(na->nla_len);
-				na=(struct nlattr *)((char *)na+len2);
 			}
+			if (na->nla_len<NLA_HDRLEN)
+				break;
+			len+=NLA_ALIGN(na->nla_len);
 		}
-		na=(struct nlattr *)((char *)GENLMSG_DATA(&msg)+len);
 	}
 
 	// maybe comment out?
@@ -267,94 +287,82 @@ error:
 	return NULL;
 }
 
+/*
+ * Process/thread walk callback.
+ *
+ * Optimization vs upstream: cache the last main-process stats pointer in *tp
+ * so consecutive threads of the same pid avoid arr_find().
+ *
+ * Important invariants (bugs fixed here):
+ *  - *tp must always point at a main process (pid==tid) entry in `a`, never a
+ *    thread-only stats object. The old code did `*tp = s` for threads, which
+ *    leaked every thread allocation and aggregated into the wrong object.
+ *  - Thread-only stats are always free_stats()'d after aggregation (or if the
+ *    parent process is missing).
+ */
 static void pid_cb(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback filter, struct xxxid_stats** tp) {
 	struct xxxid_stats *s=make_stats(tid,pid);
-	int count =0;
 	struct xxxid_stats *p = NULL;
-	struct xxxid_stats *ta; 
-	if (s) {
-		//if (filter&&filter(s))
-			//free_stats(s);
-		//else {
-			//ta = *a;
-			//printf("found tp \n");
-			if(*tp) {
-				//printf("found tp \n");
-				p = *tp;
-				//printf("p assigned to tp: %i \n", p->pid);
-			}
-			if (pid!=tid) { // maintain a thread list for each process	
-				// cs and ps are sorted so, shouldn't need to use arr_find			
-				if(p && p->pid != s->pid) {
-					printf("PIDs not equal: s->tid=%i s->pid=%i - p->pid=%i - %i\n", s->tid, s->pid, p->pid, count);
-					p=arr_find(a,s->pid); // main process' tid=thread's pid
-					//printf("found p");
-					*tp = p;
-				} else {
-					//arr_add(a,s);
-					*tp = s;
-					//return;
-				}
-				//if(s->pid == 5712) printf("PIDs not equal: s->tid=%i s->pid=%i - p->pid=%i - %i\n", s->tid, s->pid, p->pid, count);
-				//p=arr_find(a,s->pid);
-				//printf("check p");
-				//arr_add(a,s);
-				if (p) {
-					//printf("in p");
-					// aggregate thread data into the main process
-					//if (!p->threads)
-						//p->threads=arr_alloc();
-					//if (p->threads) {
-						//arr_add(p->threads,s);
-						p->swapin_delay_total+=s->swapin_delay_total;
-						p->blkio_delay_total+=s->blkio_delay_total;
-						p->read_bytes+=s->read_bytes;
-						p->write_bytes+=s->write_bytes;
-						p->cancelled_write_bytes+=s->cancelled_write_bytes;
-						
-						if(s->ac_utime)
-							p->ac_utime+=s->ac_utime;
-						if(s->ac_stime)
-							p->ac_stime+=s->ac_stime;
-						if(s->cpu_delay_total){
-							p->cpu_delay_total+=s->cpu_delay_total;
-						}
-						p->ac_majflt+=s->ac_majflt;
-						//if(s->pid == 5712) printf("PIsDs not equal: s->tid=%i s->pid=%i - p->pid=%i - %i - %i\n", s->tid, s->pid, p->pid, count, p->ac_utime);
-					//} else {
-					//	arr_add(a,s);
-					//	*tp = s;
-					//}
-				}
-			}	else {
-				arr_add(a,s);
-				*tp = s;
-				//printf("assign tp \n");
-				p = *tp;
-				//printf("tp is %i \n", p->pid);
-			}		
-		//}
+
+	(void)filter; /* batch path currently does not filter at fetch time */
+
+	if (!s)
+		return;
+
+	if (tp && *tp)
+		p = *tp;
+
+	if (pid != tid) {
+		/* Thread: fold into main process (tid == pid for the process entry). */
+		if (!p || p->pid != s->pid) {
+			p = arr_find(a, s->pid);
+			if (tp)
+				*tp = p;
+		}
+		if (p) {
+			p->swapin_delay_total += s->swapin_delay_total;
+			p->blkio_delay_total += s->blkio_delay_total;
+			p->read_bytes += s->read_bytes;
+			p->write_bytes += s->write_bytes;
+			p->cancelled_write_bytes += s->cancelled_write_bytes;
+			p->ac_utime += s->ac_utime;
+			p->ac_stime += s->ac_stime;
+			p->cpu_delay_total += s->cpu_delay_total;
+			p->ac_majflt += s->ac_majflt;
+		}
+		/* Thread row is not retained in the array. */
+		free_stats(s);
+		return;
 	}
+
+	/* Main process (pid == tid). */
+	if (arr_add(a, s)) {
+		free_stats(s);
+		return;
+	}
+	if (tp)
+		*tp = s;
 }
 
 inline struct xxxid_stats_arr *fetch_data(filter_callback filter) {
 	struct xxxid_stats_arr *a=arr_alloc();
-	struct xxxid_stats *p=calloc(1,sizeof *p);
+	struct xxxid_stats *cache = NULL;
 
 	if (!a)
 		return NULL;
 
-	pidgen_cb((pg_cb)pid_cb,a,filter, p);
+	/* Pass &cache (stats**), not a dummy allocation — matches pid_cb signature. */
+	pidgen_cb((pg_cb)pid_cb, a, filter, &cache);
 	return a;
 }
 
 inline struct xxxid_stats_arr *fetch_batch_data(struct xxxid_stats** p) {
 	struct xxxid_stats_arr *a=arr_alloc();
-	
+
 	if (!a)
 		return NULL;
 
-	pidgen_cb((pg_cb)pid_cb,a,NULL, p);
+	pidgen_cb((pg_cb)pid_cb, a, NULL, p);
 	return a;
 }
 

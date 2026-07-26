@@ -63,9 +63,7 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		uint64_t mf_val=config.f.accumulated?s->ac_majflt_total:s->ac_majflt;
 		char read_str[4],write_str[4],canceled_str[4],coremem_str[4];
 		char *pw_name;
-		char utime[8], stime[8], rtime[8], vtime[8];
-
-		double h, m, ts;
+		char utime[16], stime[16];
 
 		// show only processes, if configured
 		if (config.f.processes&&s->pid!=s->tid)
@@ -82,22 +80,26 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		
 
 		pw_name=u8strpadt(s->pw_name,10);
-		//utime="000";
-		//stime="000";
-		
-		struct tm *ptm = GetTimeAndDate(s->ac_utime_val_acc);
-		sprintf(utime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
 
-		ptm = GetTimeAndDate(s->ac_stime_val_acc);
-		sprintf(stime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-		
-		
+		/* ac_*time_val_acc are not guaranteed multiples of 1000; never deref a NULL tm* */
+		{
+			struct tm *ptm = GetTimeAndDate(s->ac_utime_val_acc);
+			if (ptm)
+				snprintf(utime, sizeof utime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+			else
+				snprintf(utime, sizeof utime, "??:??:??");
 
-		
+			ptm = GetTimeAndDate(s->ac_stime_val_acc);
+			if (ptm)
+				snprintf(stime, sizeof stime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+			else
+				snprintf(stime, sizeof stime, "??:??:??");
+		}
 
 		printf("%6i %6i %6i %4s %s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4i %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
 			s->pid, s->tid, s->ac_ppid,str_ioprio(s->io_prio),pw_name?pw_name:"(null)",read_val,read_str,write_val,write_str,
-			canceled_val,canceled_str,coremem_val,coremem_str,mf_val,s->swapin_val,s->blkio_val,s->cpu_delay_total_val,utime, stime,s->cmdline1);
+			canceled_val,canceled_str,coremem_val,coremem_str,mf_val,s->swapin_val,s->blkio_val,s->cpu_delay_total_val,utime, stime,
+			s->cmdline1?s->cmdline1:"(unknown)");
 
 		/*
 		ptm = GetTimeAndDate(s->cpu_run_real_total_val_acc);
@@ -121,12 +123,22 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 	}
 }
 
+/*
+ * Format an accumulated time counter as HH:MM:SS via localtime().
+ *
+ * Historical bug: this returned NULL whenever (ms % 1000) != 0, and callers
+ * in view_batch() dereferenced the result → occasional SIGSEGV on Rocky 8
+ * (and everywhere else) once any process had non-zero utime/stime that was
+ * not an exact multiple of 1000.
+ *
+ * taskstats ac_utime/ac_stime are in microseconds; after delta accumulation
+ * the value is almost never divisible by 1000, so the crash looked
+ * "occasional" (only on print paths for processes with CPU time).
+ */
 struct tm* GetTimeAndDate(unsigned long long milliseconds)
 {
-    time_t seconds = (time_t)(milliseconds/1000);
-    if ((uint64_t)seconds*1000 == milliseconds)
-        return localtime(&seconds);
-    return NULL; // milliseconds >= 4G*1000
+	time_t seconds = (time_t)(milliseconds / 1000ULL);
+	return localtime(&seconds);
 }
 
 inline void view_batch_init(void) {
@@ -173,15 +185,15 @@ void view_batch_loop(void) {
 	uint64_t sampler_rate = params.samplerate;
 	uint64_t t_quick_diff = 0;
 	uint64_t next_print = 0;
-	struct xxxid_stats *p=calloc(1,sizeof *p);
+	/* Cache of last main-process pointer for pid_cb; not an owned stats object. */
+	struct xxxid_stats *p = NULL;
 	int diff_len=0;
 	int new_pids=0;
 	int untracked=0;
 	int ppid_miss=0;
-	//p = NULL;
 	for (;;) {
-		// here
-		//cs=fetch_data(filter1, p);
+		/* Reset cache each sample; pointers into the previous array are invalid after arr_free. */
+		p = NULL;
 		cs = fetch_batch_data(&p);
 		
 		act.ts_c=monotime();
