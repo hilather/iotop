@@ -27,7 +27,7 @@ You should have received a copy of the GNU General Public License along with thi
 #include <sys/types.h>
 #include <stdint.h>
 
-#define VERSION "1.17-perf"
+#define VERSION "1.18.0"
 
 /*
  * Kernel taskstats ABI (see Tomas-M/iotop 1.29+).

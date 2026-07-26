@@ -28,9 +28,21 @@ How to make
 ===========
 
     # apt-install build-essential ncurses-dev
-    git clone https://github.com/Tomas-M/iotop
+    git clone https://github.com/hilather/iotop
     cd iotop
     make
+
+Prebuilt Rocky Linux 8 binaries
+===============================
+
+GitHub Actions builds **x86_64** binaries on Rocky Linux 8 for every push and
+publishes versioned assets when you push a tag `vX.Y.Z` (must match
+`#define VERSION` in `src/iotop.h`). See [docs/RELEASING.md](docs/RELEASING.md).
+
+    # from a GitHub Release
+    tar xzf iotop-*-rocky8.x86_64.tar.gz
+    sudo dnf install -y ncurses-libs
+    sudo install -m 0755 iotop-*-rocky8.x86_64 /usr/local/sbin/iotop
 
 
 Options

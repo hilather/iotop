@@ -1,0 +1,132 @@
+# Tag-driven release: publish a prebuilt Rocky Linux 8 binary.
+#
+# Versioning:
+#   1. Set #define VERSION "X.Y.Z" in src/iotop.h
+#   2. git tag vX.Y.Z && git push origin vX.Y.Z
+#   3. This workflow builds on Rocky 8 and creates a GitHub Release with assets
+#
+# Free for public repositories.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to rebuild/republish (e.g. v1.18.0)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release-rocky8:
+    name: Release binary (Rocky Linux 8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag || github.ref }}
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          HEADER_VER="$(grep -E '^#define VERSION ' src/iotop.h | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          TAG_VER="${TAG#v}"
+          echo "header_version=${HEADER_VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag_version=${TAG_VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved VERSION=${HEADER_VER} tag=${TAG}"
+          if [[ "${TAG_VER}" != "${HEADER_VER}" ]]; then
+            echo "::error::Tag version '${TAG_VER}' does not match src/iotop.h VERSION '${HEADER_VER}'."
+            echo "Update #define VERSION in src/iotop.h to match the tag (or retag)."
+            exit 1
+          fi
+
+      - name: Build Rocky Linux 8 binary
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src:rw" \
+            -w /src \
+            rockylinux:8 \
+            bash -lc '
+              set -euo pipefail
+              dnf -y install gcc make pkgconfig ncurses-devel binutils file which
+              ./scripts/ci/build-rocky8.sh
+            '
+
+      - name: Package release assets
+        id: pkg
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.header_version }}"
+          NAME="iotop-${VER}-rocky8.x86_64"
+          test -f "dist/${NAME}"
+          # tarball for distribution
+          tar -C dist -czf "dist/${NAME}.tar.gz" \
+            "${NAME}" SHA256SUMS BUILDINFO.txt
+          (
+            cd dist
+            sha256sum "${NAME}.tar.gz" >> SHA256SUMS
+          )
+          ls -la dist/
+          echo "asset_bin=dist/${NAME}" >> "$GITHUB_OUTPUT"
+          echo "asset_tgz=dist/${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: iotop ${{ steps.ver.outputs.header_version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/iotop-*-rocky8.x86_64
+            dist/iotop-*-rocky8.x86_64.tar.gz
+            dist/SHA256SUMS
+            dist/BUILDINFO.txt
+          body: |
+            ## iotop ${{ steps.ver.outputs.header_version }} (Rocky Linux 8)
+
+            Prebuilt **x86_64** binary linked against Rocky Linux 8 (el8) glibc/ncurses.
+
+            ### Install
+
+            ```bash
+            # from release assets
+            tar xzf iotop-${{ steps.ver.outputs.header_version }}-rocky8.x86_64.tar.gz
+            sudo install -m 0755 iotop-${{ steps.ver.outputs.header_version }}-rocky8.x86_64 /usr/local/sbin/iotop
+            ```
+
+            Runtime deps on Rocky 8:
+            - `glibc` (el8)
+            - `ncurses-libs` (provides libncursesw / libtinfo)
+
+            ```bash
+            sudo dnf install -y ncurses-libs
+            ```
+
+            ### Verify
+
+            ```bash
+            sha256sum -c SHA256SUMS
+            ./iotop-${{ steps.ver.outputs.header_version }}-rocky8.x86_64 -v
+            ```
+
+            Requires root or `CAP_NET_ADMIN` for live sampling.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

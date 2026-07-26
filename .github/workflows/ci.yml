@@ -1,0 +1,50 @@
+# Free GitHub Actions: build iotop on Rocky Linux 8 for every push/PR.
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-rocky8:
+    name: Build (Rocky Linux 8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build inside rockylinux:8 container
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src:rw" \
+            -w /src \
+            rockylinux:8 \
+            bash -lc '
+              set -euo pipefail
+              dnf -y install gcc make pkgconfig ncurses-devel binutils file which
+              ./scripts/ci/build-rocky8.sh
+              ./dist/iotop -v
+              ./dist/iotop -h | head -5
+            '
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iotop-rocky8-${{ github.sha }}
+          path: |
+            dist/iotop-*
+            dist/iotop
+            dist/SHA256SUMS
+            dist/BUILDINFO.txt
+          if-no-files-found: error
+          retention-days: 14
