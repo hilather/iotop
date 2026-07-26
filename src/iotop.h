@@ -29,7 +29,7 @@ You should have received a copy of the GNU General Public License along with thi
 
 /* Product identity for this fork (distinct from upstream iotop-c). */
 #define PRODUCT_NAME "iotop-perf"
-#define VERSION "1.18.0"
+#define VERSION "1.19.0"
 #define VERSION_EXTRA "hilather/perf"
 
 /*
@@ -185,10 +185,17 @@ struct xxxid_stats {
 	char proc_state; /* R/S/D/Z/... from /proc/pid/stat */
 
 	int euid;
-	int io_prio; /* kept 0 on hot path; curses expects the field */
+	int io_prio; /* batch: 0 on hot path; interactive: filled at fetch */
 
-	/* Fixed command name from taskstats.ac_comm — no malloc (P1). */
+	/* Fixed short name from taskstats.ac_comm — no malloc (batch P1). */
 	char cmdline1[IOTOP_COMM_LEN];
+
+	/*
+	 * Interactive-only heap identity (NULL in batch path).
+	 * free_stats() always frees these before freelist recycle.
+	 */
+	char *cmdline2; /* full /proc/pid/cmdline for -c / 'c' toggle */
+	char *pw_name;  /* username for USER column */
 
 	int diffs;
 	int samples;
@@ -200,7 +207,10 @@ struct xxxid_stats {
 	 */
 	uint8_t iohist[HISTORY_CNT];
 
-	/* Unused in perf fetch (threads folded); kept NULL for curses compat. */
+	/*
+	 * Interactive: per-process thread list (shared pointers into main arr;
+	 * free with arr_free_noitem). Batch: always NULL (threads folded).
+	 */
 	struct xxxid_stats_arr *threads;
 
 	/* Freelist link (P8) — not a public API field. */
@@ -266,6 +276,8 @@ inline unsigned int curses_sleep(unsigned int seconds);
 /* utils.c */
 
 void find_cmd_and_ppid(int pid,struct xxxid_stats *s);
+/* Heap full cmdline for interactive mode (caller frees). */
+char *read_cmdline(int pid,int isshort);
 
 inline int64_t monotime(void);
 inline char *u8strpadt(const char *s,ssize_t len);

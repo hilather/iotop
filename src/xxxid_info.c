@@ -14,6 +14,7 @@ You should have received a copy of the GNU General Public License along with thi
 #include "iotop.h"
 
 #include <errno.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +64,16 @@ struct xxxid_stats *alloc_stats(void) {
 inline void free_stats(struct xxxid_stats *s) {
 	if (!s)
 		return;
-	/* Fixed cmdline1 — no heap strings. threads always NULL on this path. */
+	/* Interactive heap identity (batch leaves these NULL). */
+	if (s->cmdline2) {
+		free(s->cmdline2);
+		s->cmdline2=NULL;
+	}
+	if (s->pw_name) {
+		free(s->pw_name);
+		s->pw_name=NULL;
+	}
+	/* Thread list owns no items (shared with main array). */
 	if (s->threads) {
 		arr_free_noitem(s->threads);
 		s->threads=NULL;
@@ -324,6 +334,7 @@ inline int nl_xxxid_info(pid_t tid,pid_t pid,struct xxxid_stats *stats) {
 		}
 	}
 
+	/* Batch leaves io_prio 0; interactive make_stats fills it after fetch. */
 	stats->io_prio=0;
 	return 0;
 }
@@ -335,13 +346,13 @@ inline void nl_fini(void) {
 	stats_pool_clear();
 }
 
-inline struct xxxid_stats *make_stats(pid_t tid,pid_t pid) {
+/*
+ * Batch hot path: netlink counters only. No getpwuid / cmdline / ioprio.
+ * Process leaders are lstat-checked; threads rely on netlink ESRCH (P5/P6).
+ */
+static struct xxxid_stats *make_stats_batch(pid_t tid,pid_t pid) {
 	struct xxxid_stats *s;
 
-	/*
-	 * P5/P6: for threads under a known-live process, skip lstat and let
-	 * netlink ESRCH handle races. Always check process leaders.
-	 */
 	if (pid==tid) {
 		if (!is_a_process(tid))
 			return NULL;
@@ -358,8 +369,62 @@ inline struct xxxid_stats *make_stats(pid_t tid,pid_t pid) {
 	return s;
 }
 
-static void pid_cb(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback filter,struct xxxid_stats **tp) {
-	struct xxxid_stats *s=make_stats(tid,pid);
+/*
+ * Interactive path (original iotop-c style): full identity for curses.
+ * USER, PRIO, short+long cmdline, and every tid is retained for thread view.
+ */
+static struct xxxid_stats *make_stats_interactive(pid_t tid,pid_t pid) {
+	static const char unknown[]="<unknown>";
+	struct xxxid_stats *s;
+	const char *uname;
+	int prio;
+	char *cl;
+
+	if (!is_a_process(tid))
+		return NULL;
+
+	s=alloc_stats();
+	if (!s)
+		return NULL;
+
+	if (nl_xxxid_info(tid,pid,s)) {
+		free_stats(s);
+		return NULL;
+	}
+
+	prio=get_ioprio(tid);
+	s->io_prio=prio<0?0:prio;
+
+	uname=batch_uid_name((uid_t)s->euid);
+	s->pw_name=strdup(uname?uname:unknown);
+
+	/* Prefer /proc cmdline short form over ac_comm when available. */
+	cl=read_cmdline(tid,1);
+	if (cl&&cl[0]) {
+		snprintf(s->cmdline1,sizeof s->cmdline1,"%s",cl);
+		free(cl);
+	} else if (cl)
+		free(cl);
+
+	s->cmdline2=read_cmdline(tid,0);
+	if (!s->cmdline2||!s->cmdline2[0]) {
+		if (s->cmdline2)
+			free(s->cmdline2);
+		s->cmdline2=strdup(s->cmdline1[0]?s->cmdline1:unknown);
+	}
+
+	if (!s->pw_name)
+		s->pw_name=strdup(unknown);
+
+	return s;
+}
+
+/*
+ * Batch callback: fold threads into the process leader and free thread nodes.
+ * Cache *tp as the last main-process entry to avoid arr_find on every tid.
+ */
+static void pid_cb_batch(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback filter,struct xxxid_stats **tp) {
+	struct xxxid_stats *s=make_stats_batch(tid,pid);
 	struct xxxid_stats *p=NULL;
 
 	(void)filter;
@@ -409,23 +474,71 @@ static void pid_cb(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback
 		*tp=s;
 }
 
+/*
+ * Interactive callback: keep every tid in the main array (Tomas-M style).
+ * Thread lists are linked in a second pass after the walk.
+ */
+static void pid_cb_interactive(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback filter,struct xxxid_stats **tp) {
+	struct xxxid_stats *s=make_stats_interactive(tid,pid);
+
+	(void)tp;
+
+	if (!s)
+		return;
+
+	if (filter&&filter(s)) {
+		free_stats(s);
+		return;
+	}
+
+	if (arr_add(a,s))
+		free_stats(s);
+}
+
+/* Attach non-leader tids under their process for curses tree display. */
+static void link_interactive_threads(struct xxxid_stats_arr *a) {
+	int i;
+
+	if (!a||!a->arr)
+		return;
+
+	for (i=0;i<a->length;i++) {
+		struct xxxid_stats *s=a->arr[i];
+		struct xxxid_stats *p;
+
+		if (!s||s->pid==s->tid)
+			continue;
+		p=arr_find(a,s->pid);
+		if (!p)
+			continue;
+		if (!p->threads)
+			p->threads=arr_alloc();
+		if (!p->threads)
+			continue;
+		arr_add(p->threads,s);
+	}
+}
+
+/* Interactive fetch — original iotop behaviour for curses. */
 inline struct xxxid_stats_arr *fetch_data(filter_callback filter) {
 	struct xxxid_stats_arr *a=arr_alloc();
 	struct xxxid_stats *cache=NULL;
 
 	if (!a)
 		return NULL;
-	pidgen_cb((pg_cb)pid_cb,a,filter,&cache);
+	pidgen_cb((pg_cb)pid_cb_interactive,a,filter,&cache);
 	arr_hash_build(a);
+	link_interactive_threads(a);
 	return a;
 }
 
+/* Batch fetch — performance path (fold threads, no identity). */
 inline struct xxxid_stats_arr *fetch_batch_data(struct xxxid_stats **p) {
 	struct xxxid_stats_arr *a=arr_alloc();
 
 	if (!a)
 		return NULL;
-	pidgen_cb((pg_cb)pid_cb,a,NULL,p);
+	pidgen_cb((pg_cb)pid_cb_batch,a,NULL,p);
 	arr_hash_build(a);
 	return a;
 }

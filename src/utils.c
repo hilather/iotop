@@ -54,6 +54,92 @@ void find_cmd_and_ppid(int pid,struct xxxid_stats *s) {
 }
 
 /*
+ * Interactive full/short cmdline from /proc (heap; caller frees).
+ * isshort: basename of argv0; else full cmdline with NULs as spaces.
+ * Falls back to /proc/pid/comm when cmdline is empty (kernel threads).
+ */
+char *read_cmdline(int pid,int isshort) {
+	char path[64];
+	char *dbuf;
+	ssize_t n,p=0,sz=BUFSIZ;
+	int fd;
+
+	snprintf(path,sizeof path,"/proc/%d/cmdline",pid);
+	fd=open(path,O_RDONLY);
+	if (fd!=-1) {
+		dbuf=malloc((size_t)sz+1);
+		if (!dbuf) {
+			close(fd);
+			return NULL;
+		}
+		do {
+			n=read(fd,dbuf+p,(size_t)(sz-p));
+			if (n==sz-p) {
+				char *t=realloc(dbuf,(size_t)sz+BUFSIZ+1);
+				if (!t) {
+					close(fd);
+					free(dbuf);
+					return NULL;
+				}
+				dbuf=t;
+				sz+=BUFSIZ;
+			}
+			if (n>0)
+				p+=n;
+		} while (n>0);
+		close(fd);
+
+		if (p>0) {
+			ssize_t k;
+			dbuf[p]=0;
+			if (isshort) {
+				char *ep,*shortc;
+
+				shortc=strdup(dbuf);
+				free(dbuf);
+				if (!shortc)
+					return NULL;
+				ep=strrchr(shortc,'/');
+				if (ep&&ep[1]) {
+					char *t=strdup(ep+1);
+					if (t) {
+						free(shortc);
+						shortc=t;
+					}
+				}
+				return shortc;
+			}
+			for (k=0;k<p;k++)
+				if (!dbuf[k])
+					dbuf[k]=' ';
+			return dbuf;
+		}
+		free(dbuf);
+	}
+
+	/* Kernel threads / empty cmdline — use comm. */
+	snprintf(path,sizeof path,"/proc/%d/comm",pid);
+	fd=open(path,O_RDONLY);
+	if (fd==-1)
+		return NULL;
+	dbuf=malloc(BUFSIZ+1);
+	if (!dbuf) {
+		close(fd);
+		return NULL;
+	}
+	n=read(fd,dbuf,BUFSIZ);
+	close(fd);
+	if (n<=0) {
+		free(dbuf);
+		return NULL;
+	}
+	while (n>0&&(dbuf[n-1]=='\n'||dbuf[n-1]=='\r'))
+		n--;
+	dbuf[n]=0;
+	return dbuf;
+}
+
+/*
  * Walk /proc. Main process first so pid_cb can cache the parent.
  *
  * P13: when params.walk_threads==0, do not open /proc/pid/task (process-only).

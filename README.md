@@ -38,6 +38,10 @@ Prebuilt Rocky Linux 8 binaries
 This fork ships as **`iotop-perf`** (not distro `iotop`).  
 `iotop-perf -v` prints `iotop-perf X.Y.Z (hilather/perf)`.
 
+**Modes:** default **interactive** (curses) behaves like classic iotop-c — full
+USER/PRIO/cmdline, thread walk, ionice UI. **Batch** (`-b` / `-t` / `-q`) keeps
+the performance sampling path (process-only + TGID by default; `-T` walks threads).
+
 GitHub Actions builds **x86_64** binaries on Rocky Linux 8 for every push and
 publishes versioned assets when you push a tag `vX.Y.Z` (must match
 `#define VERSION` in `src/iotop.h`). See [docs/RELEASING.md](docs/RELEASING.md).

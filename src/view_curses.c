@@ -585,16 +585,41 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct xxxid_stats_arr
 
 			read_val=config.f.accumulated?s->read_val_acc:s->read_val;
 			write_val=config.f.accumulated?s->write_val_acc:s->write_val;
+			{
+				double show_blkio=s->blkio_val;
+				double show_swapin=s->swapin_val;
+
+				/*
+				 * Process-only view: sum all threads under this process so
+				 * multi-threaded apps show group totals (original process mode).
+				 */
+				if (config.f.processes&&k<0&&ms->threads&&ms->threads->arr) {
+					int ti;
+
+					for (ti=0;ti<ms->threads->length;ti++) {
+						struct xxxid_stats *th=ms->threads->arr[ti];
+
+						if (!th)
+							continue;
+						read_val+=config.f.accumulated?th->read_val_acc:th->read_val;
+						write_val+=config.f.accumulated?th->write_val_acc:th->write_val;
+						show_blkio+=th->blkio_val;
+						show_swapin+=th->swapin_val;
+					}
+					if (show_blkio>100)
+						show_blkio=100;
+					if (show_swapin>100)
+						show_swapin=100;
+				}
 
 			humanize_val(&read_val,read_str,1);
 			humanize_val(&write_val,write_str,1);
 
-			/* USER dropped on hot path — show placeholder */
-			pwt=NULL;
-			pw_name=u8strpadt("-",9);
+			pwt=esc_low_ascii(s->pw_name);
+			pw_name=u8strpadt(pwt,9);
 			if (pwt)
 				free(pwt);
-			cmdt=esc_low_ascii(s->cmdline1);
+			cmdt=esc_low_ascii(config.f.fullcmdline&&s->cmdline2?s->cmdline2:s->cmdline1);
 			cmdline=u8strpadt(cmdt,maxcmdline-1); // -1 for thread/process link chars
 			if (cmdt)
 				free(cmdt);
@@ -650,9 +675,9 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct xxxid_stats_arr
 			if (!config.f.hidewrite)
 				printw("%7.2f %-3.3s ",write_val,write_str);
 			if (!config.f.hideswapin)
-				printw("%6.2f %% ",s->swapin_val);
+				printw("%6.2f %% ",show_swapin);
 			if (!config.f.hideio)
-				printw("%6.2f %% ",s->blkio_val);
+				printw("%6.2f %% ",show_blkio);
 			if (!config.f.hidegraph&&hrevpos>0) {
 				attron(A_REVERSE);
 				printw("%*.*s",hrevpos,hrevpos,iohist);
@@ -693,6 +718,7 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct xxxid_stats_arr
 			lastline=line;
 			if (line>maxy-1) // do not draw out of screen
 				goto donedraw;
+			} /* show_blkio/show_swapin scope */
 		}
 	}
 donedraw:
@@ -1217,8 +1243,10 @@ static inline int curses_key(int ch) {
 
 inline void view_curses_init(void) {
 	const s_helpitem *p;
+	const char *term=getenv("TERM");
 
-	if (strcmp(getenv("TERM"),"linux")) {
+	/* getenv("TERM") may be NULL when not attached to a real terminal. */
+	if (!term||strcmp(term,"linux")) {
 		if (setlocale(LC_CTYPE,"C.UTF-8"))
 			has_unicode=1;
 		else

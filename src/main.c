@@ -24,6 +24,8 @@ You should have received a copy of the GNU General Public License along with thi
 #include <sys/types.h>
 
 static const char *progname=NULL;
+/* Set when user passes -T/--threads (batch: walk+fold; interactive already walks). */
+static int opt_threads=0;
 int maxpidlen=5;
 /* First-seen kernel taskstats version; 0 until the first successful sample. */
 unsigned taskstats_ver=0;
@@ -41,7 +43,7 @@ inline void init_params(void) {
 	params.samplerate=1000;
 	params.pid=-1;
 	params.user_id=-1;
-	/* Perf defaults: process-only + TGID (override with -T). */
+	/* Sampling policy filled by apply_mode_defaults() after flags parse. */
 	params.walk_threads=0;
 	params.use_tgid=1;
 	params.top_n=0;
@@ -81,12 +83,12 @@ static inline void print_help(void) {
 		"  -p PID, --pid=PID     processes/threads to monitor [all]\n"
 		"  -u USER, --user=USER  users to monitor [all]\n"
 		"  -P, --processes       only show processes, not all threads\n"
-		"  -T, --threads         walk all threads and fold (slower; default is process-only)\n"
+		"  -T, --threads         batch: walk all threads and fold (slower; default process-only)\n"
 		"  -N NUM, --top=NUM     show only top NUM rows after sort (0=all)\n"
 		"  -f, --perf            emit PERF timing lines on stderr\n"
 		"  -E, --no-enrich       skip print-time USER/PRIO lookup (max batch speed)\n"
 		"  -D, --dirty           print Private_Dirty from smaps_rollup (Rocky 8+; costly)\n"
-		"  -c, --fullcmdline     lazy /proc/pid/cmdline at print time (not on sample path)\n"
+		"  -c, --fullcmdline     show full command line (batch: print-time; interactive: live)\n"
 		"  -a, --accumulated     show accumulated I/O instead of bandwidth\n"
 		"  -k, --kilobytes       use kilobytes instead of a human friendly unit\n"
 		"  -t, --time            add a timestamp on each line (implies --batch)\n"
@@ -190,8 +192,7 @@ static inline void parse_args(int argc,char *argv[]) {
 				params.pid=atoi(optarg);
 				break;
 			case 'T':
-				params.walk_threads=1;
-				params.use_tgid=0; /* per-tid fold path */
+				opt_threads=1;
 				break;
 			case 'N':
 				params.top_n=atoi(optarg);
@@ -228,9 +229,24 @@ static inline void parse_args(int argc,char *argv[]) {
 				exit(EXIT_FAILURE);
 		}
 	}
-	/* -P implies process-only display; also prefer TGID fetch. */
-	if (config.f.processes&&!params.walk_threads)
-		params.use_tgid=1;
+	/*
+	 * Sampling policy:
+	 *  - Interactive (default): original iotop — walk every thread, per-tid
+	 *    taskstats, full USER/PRIO/cmdline (see make_stats_interactive).
+	 *  - Batch: process-only + TGID unless -T (fold path).
+	 */
+	if (config.f.batch_mode||config.f.timestamp||config.f.quiet) {
+		if (opt_threads) {
+			params.walk_threads=1;
+			params.use_tgid=0;
+		} else {
+			params.walk_threads=0;
+			params.use_tgid=1;
+		}
+	} else {
+		params.walk_threads=1;
+		params.use_tgid=0;
+	}
 }
 
 inline void sig_handler(int signo) {

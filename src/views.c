@@ -119,27 +119,51 @@ int create_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double tim
 	for (n=0;ps&&ps->arr&&n<ps->length;n++) {
 		if (ps->arr[n]->exited||!arr_find(cs,ps->arr[n]->tid)) {
 			struct xxxid_stats *p;
+			struct xxxid_stats *src=ps->arr[n];
 
-			ps->arr[n]->exited++;
-			if (ps->arr[n]->exited>HISTORY_CNT)
+			src->exited++;
+			if (src->exited>HISTORY_CNT)
 				continue;
-			ps->arr[n]->blkio_val=0;
-			ps->arr[n]->swapin_val=0;
-			ps->arr[n]->read_val=0;
-			ps->arr[n]->write_val=0;
-			ps->arr[n]->read_val_acc=0;
-			ps->arr[n]->write_val_acc=0;
+			src->blkio_val=0;
+			src->swapin_val=0;
+			src->read_val=0;
+			src->write_val=0;
+			src->read_val_acc=0;
+			src->write_val_acc=0;
 			p=alloc_stats();
 			if (p) {
-				*p=*ps->arr[n];
+				*p=*src;
 				p->threads=NULL;
 				p->pool_next=NULL;
+				/* Own heap copies — free_stats on ps must not double-free. */
+				p->cmdline2=src->cmdline2?strdup(src->cmdline2):NULL;
+				p->pw_name=src->pw_name?strdup(src->pw_name):NULL;
 				if (!config.f.batch_mode) {
 					memmove(p->iohist+1,p->iohist,sizeof p->iohist-sizeof *p->iohist);
 					p->iohist[0]=0;
 				}
 				if (arr_add(cs,p))
 					free_stats(p);
+			}
+		}
+	}
+	/* Reattach exited threads to their process for curses tree display. */
+	if (!config.f.batch_mode) {
+		for (n=0;cs->arr&&n<cs->length;n++) {
+			struct xxxid_stats *c=cs->arr[n];
+
+			if (!c||c->pid==c->tid||!c->exited)
+				continue;
+			{
+				struct xxxid_stats *par=arr_find(cs,c->pid);
+
+				if (!par)
+					continue;
+				if (!par->threads)
+					par->threads=arr_alloc();
+				if (!par->threads)
+					continue;
+				arr_add(par->threads,c);
 			}
 		}
 	}
@@ -398,6 +422,8 @@ inline void copy_old_processes(struct xxxid_stats_arr *cs,struct xxxid_stats_arr
 		*p=*old;
 		p->threads=NULL;
 		p->pool_next=NULL;
+		p->cmdline2=old->cmdline2?strdup(old->cmdline2):NULL;
+		p->pw_name=old->pw_name?strdup(old->pw_name):NULL;
 		if (!config.f.batch_mode) {
 			memmove(p->iohist+1,p->iohist,sizeof p->iohist-sizeof *p->iohist);
 			p->iohist[0]=0;
@@ -446,14 +472,19 @@ inline int iotop_sort_cb(const void *a,const void *b) {
 			res=pa->io_prio-pb->io_prio;
 			break;
 		case SORT_BY_COMMAND:
-			res=strcmp(pa->cmdline1,pb->cmdline1);
+			if (config.f.fullcmdline&&pa->cmdline2&&pb->cmdline2)
+				res=strcmp(pa->cmdline2,pb->cmdline2);
+			else
+				res=strcmp(pa->cmdline1,pb->cmdline1);
 			break;
 		case SORT_BY_PID:
 			res=pa->tid-pb->tid;
 			break;
 		case SORT_BY_USER:
-			/* USER dropped on hot path — keep stable sort key */
-			res=pa->euid-pb->euid;
+			if (pa->pw_name&&pb->pw_name)
+				res=strcmp(pa->pw_name,pb->pw_name);
+			else
+				res=pa->euid-pb->euid;
 			break;
 		case SORT_BY_READ:
 			if (config.f.accumulated)
