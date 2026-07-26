@@ -200,6 +200,11 @@ static void apply_taskstats_payload(struct xxxid_stats *stats,const void *data,s
 		stats->ac_utime=t15.ac_utime;
 		stats->ac_stime=t15.ac_stime;
 		stats->ac_majflt=t15.ac_majflt;
+		stats->ac_minflt=t15.ac_minflt;
+		stats->nvcsw=t15.nvcsw;
+		stats->nivcsw=t15.nivcsw;
+		stats->freepages_delay_total=t15.freepages_delay_total;
+		stats->thrashing_delay_total=t15.thrashing_delay_total;
 		stats->hiwater_rss=t15.hiwater_rss;
 		stats->ac_btime=t15.ac_btime;
 		stats->cpu_delay_total=t15.cpu_delay_total;
@@ -219,6 +224,11 @@ static void apply_taskstats_payload(struct xxxid_stats *stats,const void *data,s
 		stats->ac_utime=t14.ac_utime;
 		stats->ac_stime=t14.ac_stime;
 		stats->ac_majflt=t14.ac_majflt;
+		stats->ac_minflt=t14.ac_minflt;
+		stats->nvcsw=t14.nvcsw;
+		stats->nivcsw=t14.nivcsw;
+		stats->freepages_delay_total=t14.freepages_delay_total;
+		stats->thrashing_delay_total=t14.thrashing_delay_total;
 		stats->hiwater_rss=t14.hiwater_rss;
 		stats->ac_btime=t14.ac_btime;
 		stats->cpu_delay_total=t14.cpu_delay_total;
@@ -372,6 +382,8 @@ static void pid_cb(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback
 		if (p) {
 			p->swapin_delay_total+=s->swapin_delay_total;
 			p->blkio_delay_total+=s->blkio_delay_total;
+			p->freepages_delay_total+=s->freepages_delay_total;
+			p->thrashing_delay_total+=s->thrashing_delay_total;
 			p->read_bytes+=s->read_bytes;
 			p->write_bytes+=s->write_bytes;
 			p->cancelled_write_bytes+=s->cancelled_write_bytes;
@@ -379,6 +391,9 @@ static void pid_cb(pid_t pid,pid_t tid,struct xxxid_stats_arr *a,filter_callback
 			p->ac_stime+=s->ac_stime;
 			p->cpu_delay_total+=s->cpu_delay_total;
 			p->ac_majflt+=s->ac_majflt;
+			p->ac_minflt+=s->ac_minflt;
+			p->nvcsw+=s->nvcsw;
+			p->nivcsw+=s->nivcsw;
 			if (s->hiwater_rss>p->hiwater_rss)
 				p->hiwater_rss=s->hiwater_rss;
 		}

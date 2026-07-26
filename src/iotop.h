@@ -86,11 +86,15 @@ typedef struct {
 	 * rows about to be printed. fullcmdline (-c) loads /proc/pid/cmdline lazily.
 	 */
 	int batch_enrich;
+	/* Optional print-time dirty via smaps_rollup (-D). Off by default. */
+	int track_dirty;
 } params_t;
 
 extern config_t config;
 extern params_t params;
 extern int maxpidlen;
+/* 1 if /proc/pid/smaps_rollup exists (kernel >= 4.14 / Rocky 8+). */
+extern int have_smaps_rollup;
 
 /* Optional cycle counters when params.perf is set */
 extern uint64_t perf_fetch_ms;
@@ -101,6 +105,8 @@ extern uint64_t perf_n_proc;
 extern uint64_t perf_n_getpwuid;
 extern uint64_t perf_n_cmdline;
 extern uint64_t perf_n_ioprio;
+extern uint64_t perf_n_status;
+extern uint64_t perf_n_smaps;
 
 #define HISTORY_POS 60
 #define HISTORY_CNT (HISTORY_POS*2)
@@ -130,19 +136,26 @@ struct xxxid_stats {
 	/* ---- raw counters from taskstats ---- */
 	uint64_t swapin_delay_total; /* ns */
 	uint64_t blkio_delay_total;  /* ns */
+	uint64_t freepages_delay_total;
+	uint64_t thrashing_delay_total;
 	uint64_t read_bytes;
 	uint64_t write_bytes;
 	uint64_t cancelled_write_bytes;
 	uint64_t ac_utime; /* usec */
 	uint64_t ac_stime;
 	uint64_t ac_majflt;
+	uint64_t ac_minflt;
+	uint64_t nvcsw;  /* voluntary context switches */
+	uint64_t nivcsw; /* involuntary */
 	uint64_t cpu_delay_total;
 	uint64_t ac_btime;
-	uint64_t hiwater_rss; /* KB */
+	uint64_t hiwater_rss; /* KB peak */
 
 	/* ---- derived (filled on delta / print) ---- */
 	double blkio_val;
 	double swapin_val;
+	double freepages_val;
+	double thrashing_val;
 	double read_val;
 	double write_val;
 	double read_val_acc;
@@ -156,8 +169,17 @@ struct xxxid_stats {
 	uint64_t ac_utime_val_acc;
 	uint64_t ac_stime_val_acc;
 	uint64_t ac_majflt_total;
+	uint64_t ac_minflt_total;
+	uint64_t nvcsw_delta;
+	uint64_t nivcsw_delta;
 	double time_s_acc;
 	double coremem_val; /* hiwater_rss scaled for display */
+
+	/* Print-time memory snapshot (/proc/pid/status + optional smaps_rollup) */
+	uint64_t vm_rss_kb;
+	uint64_t vm_swap_kb;
+	uint64_t private_dirty_kb;
+	char proc_state; /* R/S/D/Z/... from /proc/pid/stat */
 
 	int euid;
 	int io_prio; /* kept 0 on hot path; curses expects the field */
@@ -262,6 +284,11 @@ int batch_read_comm(pid_t pid,char *buf,size_t buflen);
 int batch_read_cmdline(pid_t pid,char *buf,size_t buflen);
 int batch_resolve_ioprio(pid_t tid);
 void batch_enrich_reset_perf(void);
+
+/* batch_mem.c — print-time status / optional dirty */
+void batch_mem_probe(void);
+/* Fills vm_rss_kb, vm_swap_kb, proc_state; optionally private_dirty_kb if track_dirty. */
+int batch_read_mem(struct xxxid_stats *s,int want_dirty);
 
 /* delayacct.c */
 inline int has_task_delayacct(void);

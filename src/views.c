@@ -277,6 +277,8 @@ void zero_pid_values(struct xxxid_stats *p) {
 		return;
 	p->blkio_val=0;
 	p->swapin_val=0;
+	p->freepages_val=0;
+	p->thrashing_val=0;
 	p->read_val=0;
 	p->write_val=0;
 	p->read_val_acc=0;
@@ -289,9 +291,16 @@ void zero_pid_values(struct xxxid_stats *p) {
 	p->ac_utime_val_acc=0;
 	p->ac_stime_val_acc=0;
 	p->ac_majflt_total=0;
+	p->ac_minflt_total=0;
+	p->nvcsw_delta=0;
+	p->nivcsw_delta=0;
 	p->time_s_acc=0;
 	p->cpu_delay_total_val=0;
 	p->cpu_delay_total_val_acc=0;
+	p->vm_rss_kb=0;
+	p->vm_swap_kb=0;
+	p->private_dirty_kb=0;
+	p->proc_state='?';
 }
 
 void initialize_pid_values(struct xxxid_stats *p,int first_seen) {
@@ -305,7 +314,7 @@ void initialize_pid_values(struct xxxid_stats *p,int first_seen) {
 
 void perform_delta_accounting(struct xxxid_stats *c,struct xxxid_stats *p,double time_s) {
 	double rv,wv,cw;
-	uint64_t st,ut,mf;
+	uint64_t st,ut,mf,mif;
 
 	if (!c||!p)
 		return;
@@ -318,6 +327,14 @@ void perform_delta_accounting(struct xxxid_stats *c,struct xxxid_stats *p,double
 	if (c->swapin_val>100)
 		c->swapin_val=100;
 
+	c->freepages_val=(double)RRVf(c,p,freepages_delay_total)/(time_s*10000000.0);
+	if (c->freepages_val>100)
+		c->freepages_val=100;
+
+	c->thrashing_val=(double)RRVf(c,p,thrashing_delay_total)/(time_s*10000000.0);
+	if (c->thrashing_val>100)
+		c->thrashing_val=100;
+
 	c->time_s_acc=p->time_s_acc+time_s;
 	rv=(double)RRVf(c,p,read_bytes);
 	wv=(double)RRVf(c,p,write_bytes);
@@ -325,6 +342,7 @@ void perform_delta_accounting(struct xxxid_stats *c,struct xxxid_stats *p,double
 	st=RRVf(c,p,ac_stime);
 	ut=RRVf(c,p,ac_utime);
 	mf=RRVf(c,p,ac_majflt);
+	mif=RRVf(c,p,ac_minflt);
 
 	c->ac_utime_val_acc+=ut;
 	c->ac_stime_val_acc+=st;
@@ -342,6 +360,9 @@ void perform_delta_accounting(struct xxxid_stats *c,struct xxxid_stats *p,double
 	c->write_val_acc=p->write_val_acc+wv;
 	c->cancelled_write_bytes_val_acc=p->cancelled_write_bytes_val_acc+cw;
 	c->ac_majflt_total+=mf;
+	c->ac_minflt_total+=mif;
+	c->nvcsw_delta=RRVf(c,p,nvcsw);
+	c->nivcsw_delta=RRVf(c,p,nivcsw);
 
 	/* P4: skip graph history on batch path */
 	if (!config.f.batch_mode) {

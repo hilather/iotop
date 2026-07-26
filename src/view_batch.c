@@ -100,9 +100,18 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 	pb_printf(pb,HEADER2_FORMAT,total_a_read,str_a_read,"",total_a_write,str_a_write,"");
 	pb_printf(pb,"\n");
 
-	if (!config.f.quiet)
-		pb_printf(pb,"%6s %6s %6s %4s %8s %11s %11s %11s %11s %5s %8s %8s %8s %8s %8s %s\n",
-			"PID","TID","PPID","PRIO","USER","DISK READ","DISK WRITE","CANCELLEDW","RSS","MJRFLT","SWAPIN","IO","CDELAY","UTIME","STIME","COMMAND");
+	if (!config.f.quiet) {
+		if (params.track_dirty)
+			pb_printf(pb,"%6s %6s %6s %4s %8s %1s %8s %8s %8s %11s %11s %11s %5s %6s %6s %6s %6s %6s %6s %6s %8s %8s %s\n",
+				"PID","TID","PPID","PRIO","USER","S","RSS","SWAP","DIRTY",
+				"DISK READ","DISK WRITE","CANCELLEDW","MAJ","MINFLT","CS",
+				"SWAPIN","IO","CDELAY","FREE","THR","UTIME","STIME","COMMAND");
+		else
+			pb_printf(pb,"%6s %6s %6s %4s %8s %1s %8s %8s %11s %11s %11s %5s %6s %6s %6s %6s %6s %6s %8s %8s %s\n",
+				"PID","TID","PPID","PRIO","USER","S","RSS","SWAP",
+				"DISK READ","DISK WRITE","CANCELLEDW","MAJ","MINFLT","CS",
+				"SWAPIN","IO","CDELAY","FREE","THR","UTIME","STIME","COMMAND");
+	}
 
 	/* P11/P18: sort with optional top-N */
 	arr_sort_top(cs,iotop_sort_cb,params.top_n);
@@ -117,9 +126,11 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 
 	for (i=0;cs->sor&&i<limit;i++) {
 		struct xxxid_stats *s=cs->sor[i];
-		double read_val,write_val,canceled_val,coremem_val;
-		uint64_t mf_val;
-		char read_str[4],write_str[4],canceled_str[4],coremem_str[4];
+		double read_val,write_val,canceled_val;
+		uint64_t mf_val,minf_val,cs_val;
+		char read_str[4],write_str[4],canceled_str[4];
+		char rss_str[4],swap_str[4],dirty_str[4];
+		double rss_v,swap_v,dirty_v;
 		char utime[16],stime[16];
 		char cmd_buf[256];
 		const char *user;
@@ -133,8 +144,12 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		read_val=config.f.accumulated?s->read_val_acc:s->read_val;
 		write_val=config.f.accumulated?s->write_val_acc:s->write_val;
 		canceled_val=config.f.accumulated?s->cancelled_write_bytes_val_acc:s->cancelled_write_bytes_val;
-		coremem_val=s->coremem_val;
 		mf_val=config.f.accumulated?s->ac_majflt_total:s->ac_majflt;
+		minf_val=config.f.accumulated?s->ac_minflt_total:s->ac_minflt_total;
+		/* For non-accum print, show per-interval deltas as rates-ish counts */
+		if (!config.f.accumulated)
+			minf_val=s->ac_minflt_total; /* still accum of deltas in window */
+		cs_val=s->nvcsw_delta+s->nivcsw_delta;
 
 		if (config.f.processes&&s->pid!=s->tid)
 			continue;
@@ -146,12 +161,9 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		humanize_val(&read_val,read_str,1);
 		humanize_val(&write_val,write_str,1);
 		humanize_val(&canceled_val,canceled_str,1);
-		humanize_val(&coremem_val,coremem_str,1);
 
 		/*
-		 * Phase R1 restores — print-time only (after filters / top-N):
-		 *  USER: cached getpwuid; PRIO: lazy ioprio_get; COMMAND: ac_comm or
-		 *  lazy /proc/pid/cmdline when -c.
+		 * Phase R1 + M2/M4: print-time only after filters / top-N.
 		 */
 		user="-";
 		prio=s->io_prio;
@@ -162,14 +174,9 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 				user=batch_uid_name((uid_t)s->euid);
 			if (!config.f.hideprio) {
 				prio=batch_resolve_ioprio(s->tid);
-				s->io_prio=prio; /* cache on object for this print generation */
+				s->io_prio=prio;
 			}
 		}
-		/*
-		 * Full cmdline (-c): /proc/pid/cmdline at print only.
-		 * Short name: prefer taskstats ac_comm; if empty and enrich on, one
-		 * /proc/pid/comm read (TGID layouts sometimes leave ac_comm blank).
-		 */
 		if (config.f.fullcmdline) {
 			if (batch_read_cmdline(s->pid,cmd_buf,sizeof cmd_buf)>0)
 				cmd=cmd_buf;
@@ -182,16 +189,42 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		if (!cmd||!cmd[0])
 			cmd="(unknown)";
 
+		/* status/stat (+ optional dirty) — one shot per printed row */
+		batch_read_mem(s,params.track_dirty);
+		/* Treat as absolute sizes (not rates): force "  " unit suffix. */
+		{
+			int acc_save=config.f.accumulated;
+			config.f.accumulated=1;
+			rss_v=(double)s->vm_rss_kb*1000.0;
+			swap_v=(double)s->vm_swap_kb*1000.0;
+			dirty_v=(double)s->private_dirty_kb*1000.0;
+			humanize_val(&rss_v,rss_str,1);
+			humanize_val(&swap_v,swap_str,1);
+			if (params.track_dirty)
+				humanize_val(&dirty_v,dirty_str,1);
+			config.f.accumulated=acc_save;
+		}
+
 		prio_str=str_ioprio(prio);
 		format_duration(s->ac_utime_val_acc,utime,sizeof utime);
 		format_duration(s->ac_stime_val_acc,stime,sizeof stime);
 
-		pb_printf(pb,"%6i %6i %6i %4s %-8.8s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4llu %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
-			s->pid,s->tid,(int)s->ac_ppid,prio_str,user,
-			read_val,read_str,write_val,write_str,
-			canceled_val,canceled_str,coremem_val,coremem_str,
-			(unsigned long long)mf_val,s->swapin_val,s->blkio_val,s->cpu_delay_total_val,
-			utime,stime,cmd);
+		if (params.track_dirty)
+			pb_printf(pb,"%6i %6i %6i %4s %-8.8s %c %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4llu %6llu %6llu %6.2f %% %6.2f %% %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
+				s->pid,s->tid,(int)s->ac_ppid,prio_str,user,s->proc_state?s->proc_state:'?',
+				rss_v,rss_str,swap_v,swap_str,dirty_v,dirty_str,
+				read_val,read_str,write_val,write_str,canceled_val,canceled_str,
+				(unsigned long long)mf_val,(unsigned long long)minf_val,(unsigned long long)cs_val,
+				s->swapin_val,s->blkio_val,s->cpu_delay_total_val,s->freepages_val,s->thrashing_val,
+				utime,stime,cmd);
+		else
+			pb_printf(pb,"%6i %6i %6i %4s %-8.8s %c %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4llu %6llu %6llu %6.2f %% %6.2f %% %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
+				s->pid,s->tid,(int)s->ac_ppid,prio_str,user,s->proc_state?s->proc_state:'?',
+				rss_v,rss_str,swap_v,swap_str,
+				read_val,read_str,write_val,write_str,canceled_val,canceled_str,
+				(unsigned long long)mf_val,(unsigned long long)minf_val,(unsigned long long)cs_val,
+				s->swapin_val,s->blkio_val,s->cpu_delay_total_val,s->freepages_val,s->thrashing_val,
+				utime,stime,cmd);
 
 		reset_pid(s);
 	}
@@ -309,7 +342,7 @@ void view_batch_loop(void) {
 			fflush(stdout);
 
 			if (params.perf)
-				fprintf(stderr,"PERF,fetch_ms=%llu,diff_ms=%llu,print_ms=%llu,n_netlink=%llu,n_proc=%llu,n_getpwuid=%llu,n_cmdline=%llu,n_ioprio=%llu,arr=%i\n",
+				fprintf(stderr,"PERF,fetch_ms=%llu,diff_ms=%llu,print_ms=%llu,n_netlink=%llu,n_proc=%llu,n_getpwuid=%llu,n_cmdline=%llu,n_ioprio=%llu,n_status=%llu,n_smaps=%llu,arr=%i,dirty=%d\n",
 					(unsigned long long)perf_fetch_ms,
 					(unsigned long long)perf_diff_ms,
 					(unsigned long long)perf_print_ms,
@@ -318,10 +351,15 @@ void view_batch_loop(void) {
 					(unsigned long long)perf_n_getpwuid,
 					(unsigned long long)perf_n_cmdline,
 					(unsigned long long)perf_n_ioprio,
-					cs?cs->length:0);
+					(unsigned long long)perf_n_status,
+					(unsigned long long)perf_n_smaps,
+					cs?cs->length:0,
+					params.track_dirty);
 
 			perf_n_netlink=0;
 			perf_n_proc=0;
+			perf_n_status=0;
+			perf_n_smaps=0;
 			batch_enrich_reset_perf();
 			act.have_o=1;
 			iters=rests=0;

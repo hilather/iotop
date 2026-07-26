@@ -109,3 +109,26 @@ Expect:
 - `avg_print_ms` rises modestly with enrich; more with `-c`
 - `avg_n_ioprio` ≈ rows printed (not process count × samples)
 - `avg_n_getpwuid` ≈ distinct UIDs (cache), not rows after warm-up within a process
+
+## Memory metrics + optional dirty (`-D`)
+
+Low-cost columns (always on in batch print): process **state**, **RSS**, **SWAP**
+(`/proc/pid/status`+`stat`), **MINFLT**, **CS**, **FREE%**, **THR%** (taskstats).
+
+Optional dirty: **`-D` / `--dirty`** reads `Private_Dirty` from
+`/proc/pid/smaps_rollup` at print time only (Rocky 8+ / kernel ≥ 4.14).
+
+```bash
+LABEL=run ITERS=4 ./scripts/perf/bench_mem.sh
+```
+
+| Scenario | Meaning |
+|----------|---------|
+| M0 `-E` | plain print + status mem |
+| M1 default | + enrich |
+| M2 `-D` | full-list dirty |
+| M3 `-D -N 20` | dirty only top 20 |
+| M5 `-T -D` | thread walk + dirty |
+
+Typical result (this host): **`-D` full list ~+380–400 ms print**; **`-D -N 20` ~4 ms**.
+Fetch stays flat.
