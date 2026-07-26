@@ -27,7 +27,7 @@ You should have received a copy of the GNU General Public License along with thi
 #include <sys/types.h>
 #include <stdint.h>
 
-#define VERSION "1.17"
+#define VERSION "1.17-perf"
 
 /*
  * Kernel taskstats ABI (see Tomas-M/iotop 1.29+).
@@ -37,6 +37,9 @@ You should have received a copy of the GNU General Public License along with thi
  */
 #define IOTOP_TASKSTATS_MINVER 4
 #define IOTOP_TASKSTATS_VERSION 15
+
+/* taskstats ac_comm[] length (TS_COMM_LEN); fixed storage avoids heap (P1). */
+#define IOTOP_COMM_LEN 32
 
 extern unsigned taskstats_ver; /* first-seen kernel taskstats version (0=none yet) */
 
@@ -72,103 +75,105 @@ typedef struct {
 	int pid;
 	long samplerate;
 	int user_id;
+	/* Performance knobs (Tier 1/2) */
+	int walk_threads; /* 1 = scan /proc/pid/task and fold (slow); 0 = process-only */
+	int use_tgid;     /* 1 = TASKSTATS_CMD_ATTR_TGID for process leaders */
+	int top_n;        /* 0 = print/sort all; >0 = top N by current sort key */
+	int perf;         /* 1 = emit PERF timing lines on stderr */
 } params_t;
 
 extern config_t config;
 extern params_t params;
 extern int maxpidlen;
 
+/* Optional cycle counters when params.perf is set */
+extern uint64_t perf_fetch_ms;
+extern uint64_t perf_diff_ms;
+extern uint64_t perf_print_ms;
+extern uint64_t perf_n_netlink;
+extern uint64_t perf_n_proc;
 
 #define HISTORY_POS 60
 #define HISTORY_CNT (HISTORY_POS*2)
 
+struct xxxid_stats;
+
 struct xxxid_stats_arr {
 	struct xxxid_stats **arr;
 	struct xxxid_stats **sor;
+	/* Open-addressed tid hash for O(1) arr_find (P17); rebuilt after sample. */
+	struct xxxid_stats **hash;
+	int hash_mask; /* size-1, size power of two */
 	int length;
 	int size;
 };
 
+/*
+ * Hot sample object: raw counters + derived rates used by batch.
+ * Intentionally no heap string pointers (P1/P2), no thread list (folded),
+ * no freepages/cpu_run_* (P19 — not product-critical for this fork).
+ */
 struct xxxid_stats {
 	pid_t pid;
 	pid_t tid;
 	pid_t ac_ppid;
-	uint64_t swapin_delay_total; // nanoseconds
-	uint64_t blkio_delay_total; // nanoseconds
-	uint64_t freepages_delay_total;
+
+	/* ---- raw counters from taskstats ---- */
+	uint64_t swapin_delay_total; /* ns */
+	uint64_t blkio_delay_total;  /* ns */
 	uint64_t read_bytes;
 	uint64_t write_bytes;
 	uint64_t cancelled_write_bytes;
-	uint64_t ac_utime;
+	uint64_t ac_utime; /* usec */
 	uint64_t ac_stime;
 	uint64_t ac_majflt;
-	uint64_t coremem;
-	uint64_t ac_etime; //usec
 	uint64_t cpu_delay_total;
-	uint64_t cpu_run_real_total;
-	uint64_t cpu_run_virtual_total;
+	uint64_t ac_btime;
+	uint64_t hiwater_rss; /* KB */
 
-
+	/* ---- derived (filled on delta / print) ---- */
 	double blkio_val;
 	double swapin_val;
-	double freepages_val;
 	double read_val;
 	double write_val;
 	double read_val_acc;
 	double write_val_acc;
 	double cancelled_write_bytes_val;
 	double cancelled_write_bytes_val_acc;
-
 	double cpu_delay_total_val;
 	double cpu_delay_total_val_acc;
-
-	uint64_t cpu_run_real_total_val;
-	uint64_t cpu_run_virtual_total_val;
-
-	uint64_t cpu_run_real_total_val_acc;
-	uint64_t cpu_run_virtual_total_val_acc;
-
 	double ac_utime_val;
 	double ac_stime_val;
-
 	uint64_t ac_utime_val_acc;
 	uint64_t ac_stime_val_acc;
 	uint64_t ac_majflt_total;
-
-	uint64_t ac_btime; //uint 32?
-
-	uint64_t hiwater_rss;
-
 	double time_s_acc;
-	/*
-	double ac_utime_total;
-	double ac_stime_total;
-	double ac_majflt_total;
-	*/
-
-	double coremem_val;
-	double coremem_val_acc;
-
-	int io_prio;
+	double coremem_val; /* hiwater_rss scaled for display */
 
 	int euid;
-	char *cmdline1;
-	char *cmdline2;
-	char *pw_name;
+	int io_prio; /* kept 0 on hot path; curses expects the field */
+
+	/* Fixed command name from taskstats.ac_comm — no malloc (P1). */
+	char cmdline1[IOTOP_COMM_LEN];
 
 	int diffs;
 	int samples;
+	int exited;
 
+	/*
+	 * Graph history for curses. Batch skips updating these (P4) when
+	 * config.f.batch_mode is set.
+	 */
 	uint8_t iohist[HISTORY_CNT];
-	int exited; // exited>0 shows for how many refresh cycles the process is gone
-	// there is no point to keep in memory data for processes exited before HISTORY_CNT cycles
+
+	/* Unused in perf fetch (threads folded); kept NULL for curses compat. */
 	struct xxxid_stats_arr *threads;
+
+	/* Freelist link (P8) — not a public API field. */
+	struct xxxid_stats *pool_next;
 };
 
-// arrays are used both for main process/thread list and for inner thread list belonging to a process
-// always start small
 #define PROC_LIST_SZ_INI 16
-// afterwards grow big
 #define PROC_LIST_SZ_INC 2048
 
 struct act_stats {
@@ -205,8 +210,10 @@ typedef int (*filter_callback)(struct xxxid_stats *);
 typedef int (*filter_callback_w)(struct xxxid_stats *,int width);
 
 inline struct xxxid_stats_arr *fetch_data(filter_callback);
-inline struct xxxid_stats_arr *fetch_batch_data(struct xxxid_stats **p) ;
+inline struct xxxid_stats_arr *fetch_batch_data(struct xxxid_stats **p);
 inline void free_stats(struct xxxid_stats *s);
+struct xxxid_stats *alloc_stats(void);
+void stats_pool_clear(void);
 
 typedef void (*view_loop)(void);
 typedef void (*view_init)(void);
@@ -224,22 +231,23 @@ inline unsigned int curses_sleep(unsigned int seconds);
 
 /* utils.c */
 
-inline char *read_cmdline(int pid,int isshort);
-void find_cmd_and_ppid(int pid, struct xxxid_stats *s);
+void find_cmd_and_ppid(int pid,struct xxxid_stats *s);
 
 inline int64_t monotime(void);
 inline char *u8strpadt(const char *s,ssize_t len);
 inline char *esc_low_ascii(char *p);
 
-typedef void (*pg_cb)(pid_t pid,pid_t tid,void *hint1,void *hint2, void *p);
-inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2, void *p);
+typedef void (*pg_cb)(pid_t pid,pid_t tid,void *hint1,void *hint2,void *p);
+inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2,void *p);
 
-/* Fast, race-tolerant identity checks used on the fetch path. */
 inline int is_a_file(const char *p);
 inline int is_a_dir(const char *p);
 inline int is_a_process(pid_t tid);
 
-/* delayacct.c — optional kernel task_delayacct sysctl (warn-only here). */
+/* Format accumulated usec-like counters as HH:MM:SS without localtime (P10). */
+void format_duration(uint64_t units,char *buf,size_t buflen);
+
+/* delayacct.c */
 inline int has_task_delayacct(void);
 inline int read_task_delayacct(void);
 void warn_task_delayacct(void);
@@ -303,7 +311,13 @@ inline int arr_add(struct xxxid_stats_arr *a,struct xxxid_stats *s);
 inline struct xxxid_stats *arr_find(struct xxxid_stats_arr *pa,pid_t tid);
 inline void arr_free(struct xxxid_stats_arr *pa);
 inline void arr_free_noitem(struct xxxid_stats_arr *pa);
+/* P16: release items to freelist, keep capacity for next sample. */
+void arr_recycle(struct xxxid_stats_arr *pa);
+/* P17: rebuild open-addressed tid hash after a full sample is built. */
+void arr_hash_build(struct xxxid_stats_arr *pa);
 inline void arr_sort(struct xxxid_stats_arr *pa,int (*cb)(const void *a,const void *b));
+/* P18: sort and keep at most top_n entries in sor (0 = all). */
+void arr_sort_top(struct xxxid_stats_arr *pa,int (*cb)(const void *a,const void *b),int top_n);
 
 #define HEADER1_FORMAT "  Total DISK READ: %7.2f %s%s |   Total DISK WRITE: %7.2f %s%s"
 #define HEADER2_FORMAT "Current DISK READ: %7.2f %s%s | Current DISK WRITE: %7.2f %s%s"
@@ -312,20 +326,19 @@ inline void calc_total(struct xxxid_stats_arr *cs,double *read,double *write);
 inline void calc_a_total(struct act_stats *act,double *read,double *write,double time_s);
 inline void humanize_val(double *value,char *str,int allow_accum);
 inline int iotop_sort_cb(const void *a,const void *b);
-int create_quick_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double time_s,filter_callback_w cb,int width,int *cnt, int flush, int *new_pids, int *untracked, int *ppid_miss); 
-void copy_old_processes(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps, int flush, int *untracked);
-void perform_delta_accounting(struct xxxid_stats *c, struct xxxid_stats *p, double time_s);
-void initialize_pid_values(struct xxxid_stats *p, int first_seen);
+/* keep_exited: when 0, skip copy_old_processes (P9 intermediate samples). */
+int create_quick_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double time_s,filter_callback_w cb,int width,int *cnt,int flush,int *new_pids,int *untracked,int *ppid_miss,int keep_exited);
+void copy_old_processes(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,int flush,int *untracked);
+void perform_delta_accounting(struct xxxid_stats *c,struct xxxid_stats *p,double time_s);
+void initialize_pid_values(struct xxxid_stats *p,int first_seen);
 void zero_pid_values(struct xxxid_stats *p);
 inline int create_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double time_s,filter_callback_w cb,int width,int *cnt);
 inline void reset_pid(struct xxxid_stats *cs);
 inline int value2scale(double val,double mx);
 inline int filter1(struct xxxid_stats *s);
-struct tm* GetTimeAndDate(unsigned long long milliseconds);
 
 #ifndef KEY_CTRL_L
 #define KEY_CTRL_L 014
 #endif
 
-#endif // __IOTOP_H__
-
+#endif /* __IOTOP_H__ */

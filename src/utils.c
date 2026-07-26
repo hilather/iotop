@@ -24,52 +24,42 @@ You should have received a copy of the GNU General Public License along with thi
 #include <sys/stat.h>
 #include <sys/types.h>
 
-void find_cmd_and_ppid(int pid, struct xxxid_stats *s) {
-	static const char unknown[]="<unknown>";
-	char *rv=NULL;
-	char path[30];
+void find_cmd_and_ppid(int pid,struct xxxid_stats *s) {
+	char path[64];
 	int fd;
 	int gc;
 	int ppid;
-	char str2[1];
-	char str1[50];
-	//char str3[60];
+	char str2[2];
+	char str1[IOTOP_COMM_LEN];
 
-	//str1 = malloc(10);
+	if (!s)
+		return;
+	s->cmdline1[0]=0;
 	snprintf(path,sizeof path,"/proc/%d/stat",pid);
 	fd=open(path,O_RDONLY);
 	if (fd!=-1) {
 		char buf[BUFSIZ+1];
 		ssize_t n=read(fd,buf,BUFSIZ);
-
 		close(fd);
-		sscanf(buf, "%i %50s %1s %i", &gc, str1, str2, &ppid);
-		//printf("Converted %i fields:str1 = %s\n", ppid, str1);
-		//sprintf(str3,"%s - %i",str1, ppid);
-		s->cmdline1 = strdup(str1);
-		s->cmdline2 =  strdup(str1);
-		//s->ppid = (pid_t) ppid;
-		//printf("Converted2 %i fields:str1 = %s\n", s->ppid, s->cmdline1);
-		
-	} else {
-		s->cmdline1 =  strdup(unknown);
-		s->cmdline2 =  strdup(unknown);
+		if (n>0) {
+			buf[n]=0;
+			if (sscanf(buf,"%i %31s %1s %i",&gc,str1,str2,&ppid)>=2) {
+				/* str1 is like (cmd) — store as-is truncated */
+				snprintf(s->cmdline1,sizeof s->cmdline1,"%s",str1);
+			}
+		}
 	}
-
+	if (!s->cmdline1[0])
+		snprintf(s->cmdline1,sizeof s->cmdline1,"<unknown>");
 }
 
 /*
- * Walk /proc for processes and their threads.
+ * Walk /proc. Main process first so pid_cb can cache the parent.
  *
- * Performance fork keeps main-process-first ordering (cb(pid,pid) then other
- * tids) so pid_cb can cache the parent without arr_find on every thread.
- *
- * Phase B hardening (from Tomas-M):
- *  - skip PIDs that are not visible/valid via is_a_process()
- *  - larger path buffers for big PID namespaces
- *  - ignore zero-length / non-numeric names already handled by strtol
+ * P13: when params.walk_threads==0, do not open /proc/pid/task (process-only).
+ * P14 pairs this with TGID netlink for leaders.
  */
-inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2, void *p) {
+inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2,void *p) {
 	DIR *pr;
 
 	if (!(pr=opendir("/proc")))
@@ -89,12 +79,13 @@ inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2, void *p) {
 		if (eol==de->d_name||*eol!='\0'||pid<=0)
 			continue;
 
-		/* Invisible or already gone — skip before netlink/task walk. */
 		if (!is_a_process(pid))
 			continue;
 
-		/* Main process first (pid == tid). */
 		cb(pid,pid,hint1,hint2,p);
+
+		if (!params.walk_threads)
+			continue;
 
 		snprintf(path,sizeof path,"/proc/%d/task",pid);
 		if (!(tr=opendir(path)))
@@ -106,19 +97,34 @@ inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2, void *p) {
 
 			if (!tde)
 				break;
-
 			eol=NULL;
 			tid=strtol(tde->d_name,&eol,10);
 			if (eol==tde->d_name||*eol!='\0'||tid<=0)
 				continue;
 			if (pid==tid)
 				continue;
-			/* Thread may have exited; make_stats re-checks is_a_process. */
+			/* P6: no is_a_process on threads — netlink ESRCH handles races. */
 			cb(pid,tid,hint1,hint2,p);
 		}
 		closedir(tr);
 	}
 	closedir(pr);
+}
+
+/* P10: format duration without localtime (units treated as milliseconds). */
+void format_duration(uint64_t units,char *buf,size_t buflen) {
+	uint64_t sec,m,h;
+
+	if (!buf||!buflen)
+		return;
+	sec=units/1000ULL;
+	h=sec/3600ULL;
+	m=(sec%3600ULL)/60ULL;
+	sec=sec%60ULL;
+	if (h>99ULL)
+		h=99ULL;
+	snprintf(buf,buflen,"%02llu:%02llu:%02llu",
+		(unsigned long long)h,(unsigned long long)m,(unsigned long long)sec);
 }
 
 inline int is_a_file(const char *p) {

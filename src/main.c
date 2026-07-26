@@ -41,6 +41,11 @@ inline void init_params(void) {
 	params.samplerate=1000;
 	params.pid=-1;
 	params.user_id=-1;
+	/* Perf defaults: process-only + TGID (override with -T). */
+	params.walk_threads=0;
+	params.use_tgid=1;
+	params.top_n=0;
+	params.perf=0;
 }
 
 static const char str_opt[]="boPaktqc123456789x";
@@ -52,10 +57,6 @@ static inline void print_help(void) {
 		"period. SWAPIN and IO are the percentages of time the thread spent respectively\n"
 		"while swapping in and waiting on I/O more generally. PRIO is the I/O priority\n"
 		"at which the thread is running (set using the ionice command).\n\n"
-		"Controls: left and right arrows to change the sorting column, r to invert the\n"
-		"sorting order, o to toggle the --only option, p to toggle the --processes\n"
-		"option, a to toggle the --accumulated option, i to change I/O priority, q to\n"
-		"quit, any other key to force a refresh.\n\n"
 		"Options:\n"
 		"  -v, --version         show program's version number and exit\n"
 		"  -h, --help            show this help message and exit\n"
@@ -67,6 +68,9 @@ static inline void print_help(void) {
 		"  -p PID, --pid=PID     processes/threads to monitor [all]\n"
 		"  -u USER, --user=USER  users to monitor [all]\n"
 		"  -P, --processes       only show processes, not all threads\n"
+		"  -T, --threads         walk all threads and fold (slower; default is process-only)\n"
+		"  -N NUM, --top=NUM     show only top NUM rows after sort (0=all)\n"
+		"  -f, --perf            emit PERF timing lines on stderr\n"
 		"  -a, --accumulated     show accumulated I/O instead of bandwidth\n"
 		"  -k, --kilobytes       use kilobytes instead of a human friendly unit\n"
 		"  -t, --time            add a timestamp on each line (implies --batch)\n"
@@ -119,10 +123,13 @@ static inline void parse_args(int argc,char *argv[]) {
 			{"hide-graph",no_argument,NULL,'8'},
 			{"hide-command",no_argument,NULL,'9'},
 			{"dead-x",no_argument,NULL,'x'},
+			{"threads",no_argument,NULL,'T'},
+			{"top",required_argument,NULL,'N'},
+			{"perf",no_argument,NULL,'f'},
 			{NULL,0,NULL,0}
 		};
 
-		int c=getopt_long(argc,argv,"vhbon:s:d:p:u:Paktqc123456789x",long_options,NULL);
+		int c=getopt_long(argc,argv,"vhbon:s:d:p:u:Paktqc123456789xTN:f",long_options,NULL);
 
 		if (c==-1) {
 			if (optind<argc) {
@@ -166,6 +173,18 @@ static inline void parse_args(int argc,char *argv[]) {
 			case 'p':
 				params.pid=atoi(optarg);
 				break;
+			case 'T':
+				params.walk_threads=1;
+				params.use_tgid=0; /* per-tid fold path */
+				break;
+			case 'N':
+				params.top_n=atoi(optarg);
+				if (params.top_n<0)
+					params.top_n=0;
+				break;
+			case 'f':
+				params.perf=1;
+				break;
 			case 'u':
 				if (optarg[0]=='+') // always interpret as numeric uid
 					params.user_id=atoi(optarg+1);
@@ -187,6 +206,9 @@ static inline void parse_args(int argc,char *argv[]) {
 				exit(EXIT_FAILURE);
 		}
 	}
+	/* -P implies process-only display; also prefer TGID fetch. */
+	if (config.f.processes&&!params.walk_threads)
+		params.use_tgid=1;
 }
 
 inline void sig_handler(int signo) {

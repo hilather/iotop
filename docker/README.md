@@ -40,6 +40,17 @@ depends on the build-host kernel headers. Layout rules:
 - `humanize_val` avoids per-loop `strlen`
 - safer printf types for majflt; clamp sort print length
 
+## Tier 1 & 2 performance work
+
+See `scripts/perf/README.md`. Quick run:
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm --entrypoint bash iotop \
+  -lc 'make NO_FLTO=1 CFLAGS="-O3 -g" -j$(nproc) && ITERS=3 ./scripts/perf/bench.sh'
+```
+
+Defaults: process-only + TGID (`-T` restores full thread walk). `-f` emits PERF lines; `-N NUM` top-N.
+
 Retest:
 
 ```bash

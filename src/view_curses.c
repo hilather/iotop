@@ -589,11 +589,12 @@ static inline void view_curses(struct xxxid_stats_arr *cs,struct xxxid_stats_arr
 			humanize_val(&read_val,read_str,1);
 			humanize_val(&write_val,write_str,1);
 
-			pwt=esc_low_ascii(s->pw_name);
-			pw_name=u8strpadt(pwt,9);
+			/* USER dropped on hot path — show placeholder */
+			pwt=NULL;
+			pw_name=u8strpadt("-",9);
 			if (pwt)
 				free(pwt);
-			cmdt=esc_low_ascii(config.f.fullcmdline?s->cmdline2:s->cmdline1);
+			cmdt=esc_low_ascii(s->cmdline1);
 			cmdline=u8strpadt(cmdt,maxcmdline-1); // -1 for thread/process link chars
 			if (cmdt)
 				free(cmdt);

@@ -91,7 +91,6 @@ int create_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double tim
 			continue;
 		}
 
-		// round robin value
 		c->blkio_val=(double)RRVf(c,p,blkio_delay_total)/(time_s*10000000.0);
 		if (c->blkio_val>100)
 			c->blkio_val=100;
@@ -109,71 +108,44 @@ int create_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double tim
 		c->read_val_acc=p->read_val_acc+rv;
 		c->write_val_acc=p->write_val_acc+wv;
 
-		memcpy(c->iohist+1,p->iohist,sizeof c->iohist-sizeof *c->iohist);
-		c->iohist[0]=value2scale(c->blkio_val,100.0);
+		if (!config.f.batch_mode) {
+			memcpy(c->iohist+1,p->iohist,sizeof c->iohist-sizeof *c->iohist);
+			c->iohist[0]=value2scale(c->blkio_val,100.0);
+		}
 
 		snprintf(temp,sizeof temp,"%i",c->tid);
 		maxpidlen=maxpidlen<(int)strlen(temp)?(int)strlen(temp):maxpidlen;
 	}
-	for (n=0;ps&&ps->arr&&n<ps->length;n++) { // copy old data for exited processes
+	for (n=0;ps&&ps->arr&&n<ps->length;n++) {
 		if (ps->arr[n]->exited||!arr_find(cs,ps->arr[n]->tid)) {
 			struct xxxid_stats *p;
 
 			ps->arr[n]->exited++;
 			if (ps->arr[n]->exited>HISTORY_CNT)
 				continue;
-			// last state is zero, only history remains
 			ps->arr[n]->blkio_val=0;
 			ps->arr[n]->swapin_val=0;
 			ps->arr[n]->read_val=0;
 			ps->arr[n]->write_val=0;
 			ps->arr[n]->read_val_acc=0;
 			ps->arr[n]->write_val_acc=0;
-			// copy process data to cs
-			p=malloc(sizeof *p);
+			p=alloc_stats();
 			if (p) {
-				*p=*ps->arr[n]; // WARNING - all dynamic data inside should always be initialized below
+				*p=*ps->arr[n];
 				p->threads=NULL;
-				// copy dynamic data to avoid double free; in the unlikely case strdup fails, data is just lost
-				if (p->cmdline1)
-					p->cmdline1=strdup(ps->arr[n]->cmdline1);
-				if (p->cmdline2)
-					p->cmdline2=strdup(ps->arr[n]->cmdline2);
-				if (p->pw_name)
-					p->pw_name=strdup(ps->arr[n]->pw_name);
-				// shift history one step
-				memmove(p->iohist+1,p->iohist,sizeof p->iohist-sizeof *p->iohist);
-				p->iohist[0]=0;
-				if (arr_add(cs,p)) { // free the data in case add fails
-					if (p->cmdline1)
-						free(p->cmdline1);
-					if (p->cmdline2)
-						free(p->cmdline2);
-					if (p->pw_name)
-						free(p->pw_name);
-					free(p);
+				p->pool_next=NULL;
+				if (!config.f.batch_mode) {
+					memmove(p->iohist+1,p->iohist,sizeof p->iohist-sizeof *p->iohist);
+					p->iohist[0]=0;
 				}
+				if (arr_add(cs,p))
+					free_stats(p);
 			}
 		}
 	}
-	// reattach exited threads back to their original process
 	for (n=0;cs->arr&&n<cs->length;n++) {
-		struct xxxid_stats *c;
-
-		c=cs->arr[n];
-		if (c->pid!=c->tid&&c->exited) {
-			struct xxxid_stats *p;
-
-			p=arr_find(cs,c->pid); // pid==tid for the main process
-			if (!p)
-				continue;
-			if (!p->threads)
-				p->threads=arr_alloc();
-			if (!p->threads) // ignore the old data in case of memory alloc error
-				continue;
-			arr_add(p->threads,c);
-		}
-		if (cb&&!cb(c,width))
+		struct xxxid_stats *c=cs->arr[n];
+		if (cb&&c&&!cb(c,width))
 			if (cnt)
 				(*cnt)++;
 	}
@@ -229,9 +201,13 @@ inline void humanize_valavg(double *value,char *str,int allow_accum) {
 	snprintf(str,4,"%c%s",u[p],config.f.accumulated&&allow_accum?"  ":"av");
 }
 
-int create_quick_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double time_s,filter_callback_w cb,int width,int *cnt, int flush, int *new_pids, int *untracked, int *ppid_miss) {
-	int n=0;
-	struct xxxid_stats *p=NULL;
+/*
+ * P7: both cs and ps are sorted by tid — linear merge instead of arr_find.
+ * keep_exited==0 skips copy_old_processes (P9 intermediate samples).
+ */
+int create_quick_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double time_s,filter_callback_w cb,int width,int *cnt,int flush,int *new_pids,int *untracked,int *ppid_miss,int keep_exited) {
+	int i=0,j=0;
+	int clen,plen;
 
 	(void)cb;
 	(void)width;
@@ -240,284 +216,176 @@ int create_quick_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,doub
 		*cnt=0;
 	if (!cs)
 		return 0;
-	/* Guard optional counters so callers can pass NULL. */
 	if (time_s<=0.0)
 		time_s=0.0001;
 
-	for (n=0;cs->arr&&n<cs->length;n++) {
-		struct xxxid_stats *c=cs->arr[n];
+	clen=cs->arr?cs->length:0;
+	plen=(ps&&ps->arr)?ps->length:0;
 
-		if (!c)
+	while (i<clen&&j<plen) {
+		struct xxxid_stats *c=cs->arr[i];
+		struct xxxid_stats *p=ps->arr[j];
+
+		if (!c) {
+			i++;
 			continue;
+		}
+		if (!p) {
+			j++;
+			continue;
+		}
 
-		p=arr_find(ps,c->tid);
-		if (!p) { /* new process or task */
+		if (c->tid==p->tid) {
+			if (p->ac_ppid!=c->ac_ppid&&p->ac_btime!=c->ac_btime) {
+				if (ppid_miss)
+					(*ppid_miss)++;
+				initialize_pid_values(c,flush);
+			} else {
+				p->samples=flush;
+				p->exited=0;
+				perform_delta_accounting(c,p,time_s);
+			}
+			i++;
+			j++;
+		} else if (c->tid<p->tid) {
 			if (new_pids)
 				(*new_pids)++;
 			initialize_pid_values(c,flush);
-			continue;
+			i++;
+		} else {
+			/* p only — exited; handled in copy_old_processes when keep_exited */
+			j++;
 		}
-		/*
-		 * Avoid diffing processes that might not be the same: recycled PID
-		 * or reparenting. Prefer elapse-time identity later; for now skip.
-		 */
-		if (p->ac_ppid!=c->ac_ppid&&p->ac_btime!=c->ac_btime) {
-			if (ppid_miss)
-				(*ppid_miss)++;
-			initialize_pid_values(c,flush);
+	}
+	while (i<clen) {
+		struct xxxid_stats *c=cs->arr[i++];
+		if (!c)
 			continue;
-		}
-		p->samples=flush;
-		p->exited=0;
-		perform_delta_accounting(c,p,time_s);
+		if (new_pids)
+			(*new_pids)++;
+		initialize_pid_values(c,flush);
 	}
 
-	copy_old_processes(cs,ps,flush,untracked);
-	// reattach exited threads back to their original process
-	/*
-	 //Only want by pid? 
-	for (n=0;cs->arr&&n<cs->length;n++) {
-		struct xxxid_stats *c;
+	if (keep_exited)
+		copy_old_processes(cs,ps,flush,untracked);
 
-		c=cs->arr[n];
-		if (c->pid!=c->tid&&c->exited) {
-			struct xxxid_stats *p;
-
-			p=arr_find(cs,c->pid); // pid==tid for the main process
-			if (!p)
-				continue;
-			if (!p->threads)
-				p->threads=arr_alloc();
-			if (!p->threads) // ignore the old data in case of memory alloc error
-				continue;
-			arr_add(p->threads,c);
-		}
-		if (cb&&!cb(c,width))
-			if (cnt)
-				(*cnt)++;
-	}
-	*/
 	return cs->length;
 }
 
-void zero_pid_values(struct xxxid_stats *p){
-	if(p){
-		p->blkio_val=0;
-		p->swapin_val=0;
-		p->freepages_val=0;
-		p->read_val=0;
-		p->write_val=0;
-		p->read_val_acc=0;
-		p->write_val_acc=0;
-		p->cancelled_write_bytes_val=0;
-		p->cancelled_write_bytes_val_acc=0;
+void zero_pid_values(struct xxxid_stats *p) {
+	if (!p)
+		return;
+	p->blkio_val=0;
+	p->swapin_val=0;
+	p->read_val=0;
+	p->write_val=0;
+	p->read_val_acc=0;
+	p->write_val_acc=0;
+	p->cancelled_write_bytes_val=0;
+	p->cancelled_write_bytes_val_acc=0;
+	p->ac_utime_val=0;
+	p->ac_stime_val=0;
+	p->coremem_val=0;
+	p->ac_utime_val_acc=0;
+	p->ac_stime_val_acc=0;
+	p->ac_majflt_total=0;
+	p->time_s_acc=0;
+	p->cpu_delay_total_val=0;
+	p->cpu_delay_total_val_acc=0;
+}
 
-		/*
-		p->ac_utime=0;
-		p->ac_stime=0;
-		p->ac_majflt=0;
-		p->coremem=0;
-		*/
+void initialize_pid_values(struct xxxid_stats *p,int first_seen) {
+	if (!p)
+		return;
+	zero_pid_values(p);
+	p->exited=0;
+	p->diffs=0;
+	p->samples=first_seen;
+}
 
-	
-		p->ac_utime_val=0;
-		p->ac_stime_val=0;
-		p->coremem_val=0;
+void perform_delta_accounting(struct xxxid_stats *c,struct xxxid_stats *p,double time_s) {
+	double rv,wv,cw;
+	uint64_t st,ut,mf;
 
-		p->ac_utime_val_acc=0;
-		p->ac_stime_val_acc=0;
-		p->ac_majflt_total=0;
-		p->coremem_val_acc=0;
-		p->time_s_acc=0;
+	if (!c||!p)
+		return;
 
-		p->freepages_delay_total=0;
-		p->cpu_run_real_total=0;
-		p->cpu_run_virtual_total=0;
-		//p->cpu_run_virtual_total_val=0;
-		p->cpu_run_virtual_total_val_acc=0;
+	c->blkio_val=(double)RRVf(c,p,blkio_delay_total)/(time_s*10000000.0);
+	if (c->blkio_val>100)
+		c->blkio_val=100;
 
-		//p->cpu_run_real_total_val=0;
-		p->cpu_run_real_total_val_acc=0;
+	c->swapin_val=(double)RRVf(c,p,swapin_delay_total)/(time_s*10000000.0);
+	if (c->swapin_val>100)
+		c->swapin_val=100;
+
+	c->time_s_acc=p->time_s_acc+time_s;
+	rv=(double)RRVf(c,p,read_bytes);
+	wv=(double)RRVf(c,p,write_bytes);
+	cw=(double)RRVf(c,p,cancelled_write_bytes);
+	st=RRVf(c,p,ac_stime);
+	ut=RRVf(c,p,ac_utime);
+	mf=RRVf(c,p,ac_majflt);
+
+	c->ac_utime_val_acc+=ut;
+	c->ac_stime_val_acc+=st;
+	c->cpu_delay_total_val_acc+=c->cpu_delay_total-p->cpu_delay_total;
+
+	c->read_val=rv/time_s;
+	c->write_val=wv/time_s;
+	c->ac_stime_val=c->ac_stime_val_acc/(c->time_s_acc*10000);
+	c->ac_utime_val=c->ac_utime_val_acc/(c->time_s_acc*10000);
+	c->cpu_delay_total_val=c->cpu_delay_total_val_acc/(c->time_s_acc*10000000);
+	c->cancelled_write_bytes_val=cw/time_s;
+	c->coremem_val=(double)(c->hiwater_rss*1000);
+
+	c->read_val_acc=p->read_val_acc+rv;
+	c->write_val_acc=p->write_val_acc+wv;
+	c->cancelled_write_bytes_val_acc=p->cancelled_write_bytes_val_acc+cw;
+	c->ac_majflt_total+=mf;
+
+	/* P4: skip graph history on batch path */
+	if (!config.f.batch_mode) {
+		memcpy(c->iohist+1,p->iohist,sizeof c->iohist-sizeof *c->iohist);
+		c->iohist[0]=value2scale(c->blkio_val,100.0);
 	}
+	c->diffs++;
 }
 
-void initialize_pid_values(struct xxxid_stats *p, int first_seen){
-	char temp[12];
-
-	if(p){
-		zero_pid_values(p);
-		p->exited=0;
-		p->diffs=0;
-		p->samples=first_seen;
-		snprintf(temp,sizeof temp,"%i",p->tid);
-		maxpidlen=maxpidlen<(int)strlen(temp)?(int)strlen(temp):maxpidlen;
-	}
-}
-
-void perform_delta_accounting(struct xxxid_stats *c, struct xxxid_stats *p, double time_s){
-		double rv,wv,cw,st,ut,mf,cd,rt,vt;
-		char temp[12];
-		// round robin value
-		if(c && p){
-			
-			c->blkio_val=(double)RRVf(c,p,blkio_delay_total)/(time_s*10000000.0);
-			if (c->blkio_val>100)
-				c->blkio_val=100;
-
-			c->swapin_val=(double)RRVf(c,p,swapin_delay_total)/(time_s*10000000.0);
-			if (c->swapin_val>100)
-				c->swapin_val=100;
-
-			c->freepages_val=(double)RRVf(c,p,freepages_delay_total)/(time_s*10000000.0);
-			if (c->freepages_val>100)
-				c->freepages_val=100;
-
-			//c->ac_utime_val=(double)RRVf(c,p,ac_utime)/(time_s*10000000.0);
-			//c->ac_stime_val=(double)RRVf(c,p,ac_stime)/(time_s*10000000.0);
-			//if (c->freepages_val>100)
-				//c->freepages_val=100;
-			
-
-			/*
-			c->ac_utime_val=(double)RRVf(c,p,ac_utime_total)/(time_s*10000000.0);
-			if (c->ac_utime_val>100)
-				c->ac_utime_val=100;
-
-			c->ac_stime_val=(double)RRVf(c,p,ac_stime_total)/(time_s*10000000.0);
-			if (c->ac_stime_val>100)
-				c->ac_stime_val=100;
-			*/
-			c->time_s_acc=p->time_s_acc + time_s;
-			rv=(double)RRVf(c,p,read_bytes);
-			wv=(double)RRVf(c,p,write_bytes);
-			cw=(double)RRVf(c,p,cancelled_write_bytes);
-			st=(uint64_t)RRVf(c,p,ac_stime);
-			ut=(uint64_t)RRVf(c,p,ac_utime);
-			cd=(uint64_t)RRVf(c,p,cpu_delay_total);
-			mf=(uint64_t)RRVf(c,p,ac_majflt);
-			rt=(uint64_t)RRVf(c,p,cpu_run_real_total);
-			vt=(uint64_t)RRVf(c,p,cpu_run_virtual_total);
-
-			c->ac_utime_val_acc+=ut;
-			c->ac_stime_val_acc+=st;
-
-			c->cpu_run_real_total_val_acc+=rt;
-			c->cpu_run_virtual_total_val_acc+=vt;
-
-			c->cpu_delay_total_val_acc+=c->cpu_delay_total - p->cpu_delay_total;
-			c->read_val=rv/time_s;
-			c->write_val=wv/time_s;
-			c->ac_stime_val=c->ac_stime_val_acc/(c->time_s_acc*10000);
-			c->ac_utime_val=c->ac_utime_val_acc/(c->time_s_acc*10000);
-			c->cpu_delay_total_val=c->cpu_delay_total_val_acc/(c->time_s_acc*10000000);
-			c->cancelled_write_bytes_val=cw/time_s;
-			c->coremem_val=(c->hiwater_rss*1000);
-
-			c->read_val_acc=p->read_val_acc+rv;
-			c->write_val_acc=p->write_val_acc+wv;
-			c->cancelled_write_bytes_val_acc=p->cancelled_write_bytes_val_acc+cw;
-
-			c->cpu_run_real_total_val=c->cpu_run_real_total_val_acc/(c->time_s_acc*1000);
-			c->cpu_run_virtual_total_val=c->cpu_run_virtual_total_val_acc/(c->time_s_acc*1000);
-			//c->cpu_run_real_total_acc+=c->cpu_run_real_total - p->cpu_run_real_total;
-
-
-			//c->ac_stime_val_acc=p->ac_stime_val_acc+st;
-			//c->ac_utime_val_acc=p->ac_utime_val_acc+ut;
-			//c->coremem_val_acc=(p->coremem_val_acc + c->coremem_val)/2;
-			//c->coremem_val_acc=p->coremem_val_acc+cm;
-
-			c->ac_majflt_total+=mf;
-
-			memcpy(c->iohist+1,p->iohist,sizeof c->iohist-sizeof *c->iohist);
-			c->iohist[0]=value2scale(c->blkio_val,100.0);
-			c->diffs++;
-			snprintf(temp,sizeof temp,"%i",c->tid);
-			maxpidlen=maxpidlen<(int)strlen(temp)?(int)strlen(temp):maxpidlen;
-		}
-}
-
-inline void copy_old_processes(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps, int flush, int *untracked){
-	int n=0;
+inline void copy_old_processes(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,int flush,int *untracked) {
+	int n;
 
 	if (!cs||!ps||!ps->arr)
 		return;
 
-	for (n=0;n<ps->length;n++) { /* copy old data for exited processes */
-		if (!ps->arr[n])
+	for (n=0;n<ps->length;n++) {
+		struct xxxid_stats *old=ps->arr[n];
+		struct xxxid_stats *p;
+
+		if (!old)
 			continue;
-
-		if (ps->arr[n]->samples!=flush) {
-			struct xxxid_stats *p;
-
-			if (!ps->arr[n]->diffs) {
-				if (untracked)
-					(*untracked)++;
-				continue;
-			}
-			ps->arr[n]->exited++;
-			// last state is zero, only history remains
-			/*
-			ps->arr[n]->blkio_val=0;
-			ps->arr[n]->swapin_val=0;
-			ps->arr[n]->read_val=0;
-			ps->arr[n]->write_val=0;
-			ps->arr[n]->read_val_acc=0;
-			ps->arr[n]->write_val_acc=0;
-			*/
-			// copy process data to cs
-
-			p=malloc(sizeof *p);
-			if (p) {
-				*p=*ps->arr[n]; // WARNING - all dynamic data inside should always be initialized below
-				p->threads=NULL;
-				// copy dynamic data to avoid double free; in the unlikely case strdup fails, data is just lost
-				if (p->cmdline1)
-					p->cmdline1=strdup(ps->arr[n]->cmdline1);
-				if (p->cmdline2)
-					p->cmdline2=strdup(ps->arr[n]->cmdline2);
-				if (p->pw_name)
-					p->pw_name=strdup(ps->arr[n]->pw_name);
-				if (p->ac_ppid){
-					p->ac_ppid = ps->arr[n]->ac_ppid;
-				}
-				if (p->exited){
-					p->exited = ps->arr[n]->exited;
-				}
-				if (p->exited){
-					p->exited = ps->arr[n]->exited;
-				}
-				if (p->exited){
-					p->exited = ps->arr[n]->exited;
-				}
-				if (p->samples){
-					p->samples = ps->arr[n]->samples;
-				}
-				/*
-				if (p->samples){
-					p->samples = ps->arr[n]->samples;
-				}
-				*/
-				
-				if (p->tid){
-					p->tid += p->samples; 
-				}
-				
-					
-				// shift history one step
-				memmove(p->iohist+1,p->iohist,sizeof p->iohist-sizeof *p->iohist);
-				p->iohist[0]=0;
-				if (arr_add(cs,p)) { // free the data in case add fails
-					if (p->cmdline1)
-						free(p->cmdline1);
-					if (p->cmdline2)
-						free(p->cmdline2);
-					if (p->pw_name)
-						free(p->pw_name);
-					free(p);
-				}
-			}
+		if (old->samples==flush)
+			continue;
+		if (!old->diffs) {
+			if (untracked)
+				(*untracked)++;
+			continue;
 		}
+		old->exited++;
+		p=alloc_stats();
+		if (!p)
+			continue;
+		*p=*old;
+		p->threads=NULL;
+		p->pool_next=NULL;
+		if (!config.f.batch_mode) {
+			memmove(p->iohist+1,p->iohist,sizeof p->iohist-sizeof *p->iohist);
+			p->iohist[0]=0;
+		}
+		/* Disambiguate recycled tid slots for sort uniqueness */
+		if (p->tid)
+			p->tid+=p->samples;
+		if (arr_add(cs,p))
+			free_stats(p);
 	}
 }
 
@@ -556,18 +424,15 @@ inline int iotop_sort_cb(const void *a,const void *b) {
 		case SORT_BY_PRIO:
 			res=pa->io_prio-pb->io_prio;
 			break;
-		case SORT_BY_COMMAND: {
-			const char *ca = config.f.fullcmdline ? pa->cmdline2 : pa->cmdline1;
-			const char *cb = config.f.fullcmdline ? pb->cmdline2 : pb->cmdline1;
-			res = strcmp(ca ? ca : "", cb ? cb : "");
+		case SORT_BY_COMMAND:
+			res=strcmp(pa->cmdline1,pb->cmdline1);
 			break;
-		}
 		case SORT_BY_PID:
 			res=pa->tid-pb->tid;
 			break;
 		case SORT_BY_USER:
-			/* pw_name may be NULL in the stripped/performance build path */
-			res=strcmp(pa->pw_name ? pa->pw_name : "", pb->pw_name ? pb->pw_name : "");
+			/* USER dropped on hot path — keep stable sort key */
+			res=pa->euid-pb->euid;
 			break;
 		case SORT_BY_READ:
 			if (config.f.accumulated)
