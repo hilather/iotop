@@ -46,6 +46,8 @@ inline void init_params(void) {
 	params.use_tgid=1;
 	params.top_n=0;
 	params.perf=0;
+	/* Print-time USER/PRIO enrichment on by default for batch UX. */
+	params.batch_enrich=1;
 }
 
 static const char str_opt[]="boPaktqc123456789x";
@@ -71,10 +73,11 @@ static inline void print_help(void) {
 		"  -T, --threads         walk all threads and fold (slower; default is process-only)\n"
 		"  -N NUM, --top=NUM     show only top NUM rows after sort (0=all)\n"
 		"  -f, --perf            emit PERF timing lines on stderr\n"
+		"  -E, --no-enrich       skip print-time USER/PRIO lookup (max batch speed)\n"
+		"  -c, --fullcmdline     lazy /proc/pid/cmdline at print time (not on sample path)\n"
 		"  -a, --accumulated     show accumulated I/O instead of bandwidth\n"
 		"  -k, --kilobytes       use kilobytes instead of a human friendly unit\n"
 		"  -t, --time            add a timestamp on each line (implies --batch)\n"
-		"  -c, --fullcmdline     show full command line\n"
 		"  -1, --hide-pid        hide PID/TID column\n"
 		"  -2, --hide-prio       hide PRIO column\n"
 		"  -3, --hide-user       hide USER column\n"
@@ -126,10 +129,11 @@ static inline void parse_args(int argc,char *argv[]) {
 			{"threads",no_argument,NULL,'T'},
 			{"top",required_argument,NULL,'N'},
 			{"perf",no_argument,NULL,'f'},
+			{"no-enrich",no_argument,NULL,'E'},
 			{NULL,0,NULL,0}
 		};
 
-		int c=getopt_long(argc,argv,"vhbon:s:d:p:u:Paktqc123456789xTN:f",long_options,NULL);
+		int c=getopt_long(argc,argv,"vhbon:s:d:p:u:Paktqc123456789xTN:fE",long_options,NULL);
 
 		if (c==-1) {
 			if (optind<argc) {
@@ -184,6 +188,9 @@ static inline void parse_args(int argc,char *argv[]) {
 				break;
 			case 'f':
 				params.perf=1;
+				break;
+			case 'E':
+				params.batch_enrich=0;
 				break;
 			case 'u':
 				if (optarg[0]=='+') // always interpret as numeric uid

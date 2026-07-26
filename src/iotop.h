@@ -80,6 +80,12 @@ typedef struct {
 	int use_tgid;     /* 1 = TASKSTATS_CMD_ATTR_TGID for process leaders */
 	int top_n;        /* 0 = print/sort all; >0 = top N by current sort key */
 	int perf;         /* 1 = emit PERF timing lines on stderr */
+	/*
+	 * Print-time enrichment (Phase R1) — never on fetch path.
+	 * batch_enrich=1: resolve USER (getpwuid cache) + PRIO (ioprio_get) for
+	 * rows about to be printed. fullcmdline (-c) loads /proc/pid/cmdline lazily.
+	 */
+	int batch_enrich;
 } params_t;
 
 extern config_t config;
@@ -92,6 +98,9 @@ extern uint64_t perf_diff_ms;
 extern uint64_t perf_print_ms;
 extern uint64_t perf_n_netlink;
 extern uint64_t perf_n_proc;
+extern uint64_t perf_n_getpwuid;
+extern uint64_t perf_n_cmdline;
+extern uint64_t perf_n_ioprio;
 
 #define HISTORY_POS 60
 #define HISTORY_CNT (HISTORY_POS*2)
@@ -246,6 +255,13 @@ inline int is_a_process(pid_t tid);
 
 /* Format accumulated usec-like counters as HH:MM:SS without localtime (P10). */
 void format_duration(uint64_t units,char *buf,size_t buflen);
+
+/* batch_enrich.c — print-time only */
+const char *batch_uid_name(uid_t uid);
+int batch_read_comm(pid_t pid,char *buf,size_t buflen);
+int batch_read_cmdline(pid_t pid,char *buf,size_t buflen);
+int batch_resolve_ioprio(pid_t tid);
+void batch_enrich_reset_perf(void);
 
 /* delayacct.c */
 inline int has_task_delayacct(void);

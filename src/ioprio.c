@@ -58,11 +58,16 @@ inline int ioprio2prio(int ioprio) {
 inline const char *str_ioprio(int io_prio) {
 	static const char corrupted[]="xx/x";
 	static char buf[IOPRIO_STR_MAXSIZ];
-	int io_class=io_prio>>IOPRIO_CLASS_SHIFT;
+	int io_class;
 
+	/* get_ioprio can return -1 for exited tasks; never index with that. */
+	if (io_prio<0)
+		return corrupted;
+
+	io_class=io_prio>>IOPRIO_CLASS_SHIFT;
 	io_prio&=((1<<IOPRIO_CLASS_SHIFT)-1);
 
-	if (io_class>=IOPRIO_CLASS_MAX)
+	if (io_class<=0||io_class>=IOPRIO_CLASS_MAX)
 		return corrupted;
 
 	snprintf(buf,sizeof buf,IOPRIO_STR_FORMAT,str_ioprio_class[io_class],io_prio);

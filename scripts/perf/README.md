@@ -80,3 +80,32 @@ make clean && make NO_FLTO=1 CFLAGS='-O3 -g'
 ITERS=8 ./scripts/perf/bench.sh
 # compare avg_fetch_ms / avg_n_netlink for S1 and S2
 ```
+
+## Batch print-time restores (Phase R1)
+
+USER (`getpwuid` cache), PRIO (`ioprio_get`), and optional full cmdline (`-c`)
+run **only for rows about to be printed** — never on the sample path.
+
+| Flag | Effect |
+|------|--------|
+| (default) | enrich USER + PRIO at print |
+| `-E` / `--no-enrich` | disable enrich (max speed) |
+| `-c` | lazy `/proc/pid/cmdline` at print |
+| `-N NUM` | only enrich top NUM rows |
+
+```bash
+# cost matrix for restores
+LABEL=after ITERS=4 ./scripts/perf/bench_restore.sh
+
+# compare two runs
+python3 scripts/perf/compare_restore.py \
+  scripts/perf/results/restore_before/restore_*.csv \
+  scripts/perf/results/restore_after/restore_*.csv
+```
+
+Expect:
+
+- `avg_fetch_ms` ≈ flat between `R0_plain` and `R1_enrich`
+- `avg_print_ms` rises modestly with enrich; more with `-c`
+- `avg_n_ioprio` ≈ rows printed (not process count × samples)
+- `avg_n_getpwuid` ≈ distinct UIDs (cache), not rows after warm-up within a process

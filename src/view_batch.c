@@ -121,6 +121,11 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		uint64_t mf_val;
 		char read_str[4],write_str[4],canceled_str[4],coremem_str[4];
 		char utime[16],stime[16];
+		char cmd_buf[256];
+		const char *user;
+		const char *cmd;
+		const char *prio_str;
+		int prio;
 
 		if (!s)
 			continue;
@@ -143,17 +148,50 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		humanize_val(&canceled_val,canceled_str,1);
 		humanize_val(&coremem_val,coremem_str,1);
 
-		/* P3: USER always blank on hot path — fixed width, no malloc */
-		/* P10: integer duration format */
+		/*
+		 * Phase R1 restores — print-time only (after filters / top-N):
+		 *  USER: cached getpwuid; PRIO: lazy ioprio_get; COMMAND: ac_comm or
+		 *  lazy /proc/pid/cmdline when -c.
+		 */
+		user="-";
+		prio=s->io_prio;
+		cmd=s->cmdline1[0]?s->cmdline1:NULL;
+
+		if (params.batch_enrich) {
+			if (!config.f.hideuser)
+				user=batch_uid_name((uid_t)s->euid);
+			if (!config.f.hideprio) {
+				prio=batch_resolve_ioprio(s->tid);
+				s->io_prio=prio; /* cache on object for this print generation */
+			}
+		}
+		/*
+		 * Full cmdline (-c): /proc/pid/cmdline at print only.
+		 * Short name: prefer taskstats ac_comm; if empty and enrich on, one
+		 * /proc/pid/comm read (TGID layouts sometimes leave ac_comm blank).
+		 */
+		if (config.f.fullcmdline) {
+			if (batch_read_cmdline(s->pid,cmd_buf,sizeof cmd_buf)>0)
+				cmd=cmd_buf;
+		} else if ((!cmd||!cmd[0])&&params.batch_enrich) {
+			if (batch_read_comm(s->pid,cmd_buf,sizeof cmd_buf)>0) {
+				cmd=cmd_buf;
+				snprintf(s->cmdline1,sizeof s->cmdline1,"%.31s",cmd_buf);
+			}
+		}
+		if (!cmd||!cmd[0])
+			cmd="(unknown)";
+
+		prio_str=str_ioprio(prio);
 		format_duration(s->ac_utime_val_acc,utime,sizeof utime);
 		format_duration(s->ac_stime_val_acc,stime,sizeof stime);
 
-		pb_printf(pb,"%6i %6i %6i %4s %-8s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4llu %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
-			s->pid,s->tid,(int)s->ac_ppid,str_ioprio(s->io_prio),"-",
+		pb_printf(pb,"%6i %6i %6i %4s %-8.8s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4llu %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
+			s->pid,s->tid,(int)s->ac_ppid,prio_str,user,
 			read_val,read_str,write_val,write_str,
 			canceled_val,canceled_str,coremem_val,coremem_str,
 			(unsigned long long)mf_val,s->swapin_val,s->blkio_val,s->cpu_delay_total_val,
-			utime,stime,s->cmdline1[0]?s->cmdline1:"(unknown)");
+			utime,stime,cmd);
 
 		reset_pid(s);
 	}
@@ -259,6 +297,7 @@ void view_batch_loop(void) {
 					(unsigned long long)perf_n_proc);
 			pb_printf(&pb,"\n");
 
+			batch_enrich_reset_perf();
 			view_batch(cs,ps,&act,diff_len,time_diff,&pb);
 			t3=monotime();
 			if (params.perf)
@@ -270,16 +309,20 @@ void view_batch_loop(void) {
 			fflush(stdout);
 
 			if (params.perf)
-				fprintf(stderr,"PERF,fetch_ms=%llu,diff_ms=%llu,print_ms=%llu,n_netlink=%llu,n_proc=%llu,arr=%i\n",
+				fprintf(stderr,"PERF,fetch_ms=%llu,diff_ms=%llu,print_ms=%llu,n_netlink=%llu,n_proc=%llu,n_getpwuid=%llu,n_cmdline=%llu,n_ioprio=%llu,arr=%i\n",
 					(unsigned long long)perf_fetch_ms,
 					(unsigned long long)perf_diff_ms,
 					(unsigned long long)perf_print_ms,
 					(unsigned long long)perf_n_netlink,
 					(unsigned long long)perf_n_proc,
+					(unsigned long long)perf_n_getpwuid,
+					(unsigned long long)perf_n_cmdline,
+					(unsigned long long)perf_n_ioprio,
 					cs?cs->length:0);
 
 			perf_n_netlink=0;
 			perf_n_proc=0;
+			batch_enrich_reset_perf();
 			act.have_o=1;
 			iters=rests=0;
 			time_diff=0;
