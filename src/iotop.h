@@ -29,6 +29,17 @@ You should have received a copy of the GNU General Public License along with thi
 
 #define VERSION "1.17"
 
+/*
+ * Kernel taskstats ABI (see Tomas-M/iotop 1.29+).
+ * Layout of struct taskstats is versioned; v15 broke field offsets vs v14.
+ * We parse via vendored taskstats-v14.h / taskstats-v15.h, not build-host
+ * kernel headers for field access.
+ */
+#define IOTOP_TASKSTATS_MINVER 4
+#define IOTOP_TASKSTATS_VERSION 15
+
+extern unsigned taskstats_ver; /* first-seen kernel taskstats version (0=none yet) */
+
 typedef union {
 	struct _flags {
 		int batch_mode;
@@ -186,6 +197,7 @@ struct act_stats {
 
 inline void nl_init(void);
 inline void nl_fini(void);
+void warn_taskstats_version(void);
 
 inline int nl_xxxid_info(pid_t tid,pid_t pid,struct xxxid_stats *stats);
 
@@ -221,6 +233,16 @@ inline char *esc_low_ascii(char *p);
 
 typedef void (*pg_cb)(pid_t pid,pid_t tid,void *hint1,void *hint2, void *p);
 inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2, void *p);
+
+/* Fast, race-tolerant identity checks used on the fetch path. */
+inline int is_a_file(const char *p);
+inline int is_a_dir(const char *p);
+inline int is_a_process(pid_t tid);
+
+/* delayacct.c — optional kernel task_delayacct sysctl (warn-only here). */
+inline int has_task_delayacct(void);
+inline int read_task_delayacct(void);
+void warn_task_delayacct(void);
 
 /* ioprio.c */
 

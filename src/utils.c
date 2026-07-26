@@ -58,43 +58,93 @@ void find_cmd_and_ppid(int pid, struct xxxid_stats *s) {
 
 }
 
+/*
+ * Walk /proc for processes and their threads.
+ *
+ * Performance fork keeps main-process-first ordering (cb(pid,pid) then other
+ * tids) so pid_cb can cache the parent without arr_find on every thread.
+ *
+ * Phase B hardening (from Tomas-M):
+ *  - skip PIDs that are not visible/valid via is_a_process()
+ *  - larger path buffers for big PID namespaces
+ *  - ignore zero-length / non-numeric names already handled by strtol
+ */
 inline void pidgen_cb(pg_cb cb,void *hint1,void *hint2, void *p) {
 	DIR *pr;
 
-	if ((pr=opendir("/proc"))) {
+	if (!(pr=opendir("/proc")))
+		return;
+
+	for (;;) {
 		struct dirent *de=readdir(pr);
+		char *eol=NULL;
+		char path[64];
+		pid_t pid;
+		DIR *tr;
 
-		for (;de;de=readdir(pr)) {
-			char *eol=NULL;
-			char path[30];
-			int havt=0;
-			pid_t pid;
-			DIR *tr;
+		if (!de)
+			break;
 
-			pid=strtol(de->d_name,&eol,10);
-			if (*eol!='\0')
+		pid=strtol(de->d_name,&eol,10);
+		if (eol==de->d_name||*eol!='\0'||pid<=0)
+			continue;
+
+		/* Invisible or already gone — skip before netlink/task walk. */
+		if (!is_a_process(pid))
+			continue;
+
+		/* Main process first (pid == tid). */
+		cb(pid,pid,hint1,hint2,p);
+
+		snprintf(path,sizeof path,"/proc/%d/task",pid);
+		if (!(tr=opendir(path)))
+			continue;
+
+		for (;;) {
+			struct dirent *tde=readdir(tr);
+			pid_t tid;
+
+			if (!tde)
+				break;
+
+			eol=NULL;
+			tid=strtol(tde->d_name,&eol,10);
+			if (eol==tde->d_name||*eol!='\0'||tid<=0)
 				continue;
-			snprintf(path,sizeof path,"/proc/%d/task",pid);
-			cb(pid,pid,hint1,hint2,p);
-			if ((tr=opendir(path))) {
-				struct dirent *tde=readdir(tr);
-				
-				for (;tde;tde=readdir(tr)) {
-					pid_t tid;
-
-					eol=NULL;
-					tid=strtol(tde->d_name,&eol,10);
-					if (*eol!='\0')
-						continue;
-					
-					if(pid != tid)
-						cb(pid,tid,hint1,hint2,p);
-				}
-				closedir(tr);
-			}
+			if (pid==tid)
+				continue;
+			/* Thread may have exited; make_stats re-checks is_a_process. */
+			cb(pid,tid,hint1,hint2,p);
 		}
-		closedir(pr);
+		closedir(tr);
 	}
+	closedir(pr);
+}
+
+inline int is_a_file(const char *p) {
+	struct stat st;
+
+	if (!p||lstat(p,&st))
+		return 0;
+	return (st.st_mode&S_IFMT)==S_IFREG;
+}
+
+inline int is_a_dir(const char *p) {
+	struct stat st;
+
+	if (!p||lstat(p,&st))
+		return 0;
+	return (st.st_mode&S_IFMT)==S_IFDIR;
+}
+
+/* Prefer /proc/<tid>/stat (regular file) over the directory — more reliable. */
+inline int is_a_process(pid_t tid) {
+	char path[64];
+
+	if (tid<=0)
+		return 0;
+	snprintf(path,sizeof path,"/proc/%d/stat",tid);
+	return is_a_file(path);
 }
 
 inline int64_t monotime(void) {
@@ -110,8 +160,10 @@ inline int64_t monotime(void) {
 inline const char *esc_low_ascii1(char c) {
 	static char ehex[0x20][6];
 	static int initialized=0;
+	unsigned char uc=(unsigned char)c;
 
-	if (c>=0x20) // no escaping needed
+	/* char may be signed; only ASCII control bytes 0x00..0x1f need escaping. */
+	if (uc>=0x20)
 		return NULL;
 	if (!initialized) {
 		int i;
@@ -120,8 +172,8 @@ inline const char *esc_low_ascii1(char c) {
 			sprintf(ehex[i],"\\0x%02x",i);
 		initialized=1;
 	}
-	switch (c) {
-		case 0x00: // shorter form
+	switch (uc) {
+		case 0x00: /* shorter form */
 			return "\\0";
 		case 0x07:
 			return "\\a";
@@ -140,7 +192,7 @@ inline const char *esc_low_ascii1(char c) {
 		case 0x1b:
 			return "\\e";
 		default:
-			return ehex[(unsigned)c];
+			return ehex[uc];
 	}
 }
 

@@ -25,6 +25,8 @@ You should have received a copy of the GNU General Public License along with thi
 
 static const char *progname=NULL;
 int maxpidlen=5;
+/* First-seen kernel taskstats version; 0 until the first successful sample. */
+unsigned taskstats_ver=0;
 
 config_t config;
 params_t params;
@@ -202,6 +204,9 @@ int main(int argc,char *argv[]) {
 	if (system_checks())
 		return EXIT_FAILURE;
 
+	/* Warn once if delay accounting is toggleable and currently off. */
+	warn_task_delayacct();
+
 	setlocale(LC_ALL,"");
 	nl_init();
 
@@ -221,6 +226,7 @@ int main(int argc,char *argv[]) {
 	v_loop_cb();
 	v_fini_cb();
 	nl_fini();
+	warn_taskstats_version();
 
 	return 0;
 }

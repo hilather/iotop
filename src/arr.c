@@ -112,7 +112,7 @@ inline int arr_add(struct xxxid_stats_arr *pa,struct xxxid_stats *ps) {
 inline struct xxxid_stats *arr_find(struct xxxid_stats_arr *pa,pid_t tid) {
 	int i,s,e,r;
 
-	if (!pa)
+	if (!pa||!pa->arr||pa->length<=0)
 		return NULL;
 
 	s=0;
@@ -120,6 +120,8 @@ inline struct xxxid_stats *arr_find(struct xxxid_stats_arr *pa,pid_t tid) {
 	for (;;) {
 		if (e-s<5) {
 			for (i=s;i<e;i++) {
+				if (!pa->arr[i])
+					continue;
 				r=tid-pa->arr[i]->tid;
 				if (!r)
 					return pa->arr[i];
@@ -129,6 +131,8 @@ inline struct xxxid_stats *arr_find(struct xxxid_stats_arr *pa,pid_t tid) {
 			return NULL;
 		} else {
 			i=s+(e-s)/2;
+			if (!pa->arr[i])
+				return NULL;
 			r=tid-pa->arr[i]->tid;
 			if (!r)
 				return pa->arr[i];

@@ -111,8 +111,10 @@ cmd_doctor() {
   make --version | head -1
   gdb --version | head -1
   valgrind --version || true
-  echo "=== taskstats header ==="
-  ls -la /usr/include/linux/taskstats.h 2>/dev/null || echo "no taskstats.h"
+  echo "=== taskstats (build-host header + vendored layouts) ==="
+  ls -la /usr/include/linux/taskstats.h 2>/dev/null || echo "no system taskstats.h"
+  ls -la src/taskstats-v14.h src/taskstats-v15.h 2>/dev/null || true
+  grep -E 'IOTOP_TASKSTATS|TASKSTATS_VERSION' src/iotop.h /usr/include/linux/taskstats.h 2>/dev/null | head -20 || true
   echo "=== /proc sample ==="
   ls /proc | head -5
 }

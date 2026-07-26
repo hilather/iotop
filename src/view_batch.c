@@ -22,12 +22,16 @@ You should have received a copy of the GNU General Public License along with thi
 #define TIMEDIFF_IN_S(sta,end) ((((sta)==(end))||(sta)==0)?0.0001:(((end)-(sta))/1000.0))
 
 static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,struct act_stats *act, int diff_len, double time_s) {
-	//double time_s=TIMEDIFF_IN_S(act->ts_o,act->ts_c);
 	double total_a_read,total_a_write;
 	char str_a_read[4],str_a_write[4];
 	double total_read,total_write;
 	char str_read[4],str_write[4];
 	int i;
+
+	(void)ps;
+
+	if (!cs)
+		return;
 
 	calc_total(cs,&total_read,&total_write);
 	calc_a_total(act,&total_a_read,&total_a_write,time_s);
@@ -54,72 +58,67 @@ static inline void view_batch(struct xxxid_stats_arr *cs,struct xxxid_stats_arr 
 		printf("%6s %6s %6s %4s %8s %11s %11s %11s %11s %5s %8s %8s %8s %8s %8s %s\n","PID","TID","PPID","PRIO","USER","DISK READ","DISK WRITE","CANCELLEDW","RSS","MJRFLT","SWAPIN","IO","CDELAY","UTIME","STIME","COMMAND");
 	arr_sort(cs,iotop_sort_cb);
 
+	if (diff_len<0)
+		diff_len=0;
+	if (cs->length<diff_len)
+		diff_len=cs->length;
+
 	for (i=0;cs->sor&&i<diff_len;i++) {
 		struct xxxid_stats *s=cs->sor[i];
-		double read_val=config.f.accumulated?s->read_val_acc:s->read_val;
-		double write_val=config.f.accumulated?s->write_val_acc:s->write_val;
-		double canceled_val=config.f.accumulated?s->cancelled_write_bytes_val_acc:s->cancelled_write_bytes_val;
-		double coremem_val=config.f.accumulated?s->coremem_val:s->coremem_val;
-		uint64_t mf_val=config.f.accumulated?s->ac_majflt_total:s->ac_majflt;
+		double read_val,write_val,canceled_val,coremem_val;
+		uint64_t mf_val;
 		char read_str[4],write_str[4],canceled_str[4],coremem_str[4];
 		char *pw_name;
-		char utime[16], stime[16];
+		char utime[16],stime[16];
+		struct tm *ptm;
 
-		// show only processes, if configured
+		if (!s)
+			continue;
+
+		read_val=config.f.accumulated?s->read_val_acc:s->read_val;
+		write_val=config.f.accumulated?s->write_val_acc:s->write_val;
+		canceled_val=config.f.accumulated?s->cancelled_write_bytes_val_acc:s->cancelled_write_bytes_val;
+		coremem_val=s->coremem_val;
+		mf_val=config.f.accumulated?s->ac_majflt_total:s->ac_majflt;
+
+		/* show only processes, if configured */
 		if (config.f.processes&&s->pid!=s->tid)
 			continue;
-		if (config.f.only&&!read_val&&!write_val&&!s->ac_utime_val_acc &&!s->ac_stime_val_acc &&!s->cpu_run_virtual_total_val_acc  &&!s->cpu_run_real_total_val_acc)
+		if (config.f.only&&!read_val&&!write_val&&!s->ac_utime_val_acc&&!s->ac_stime_val_acc&&!s->cpu_run_virtual_total_val_acc&&!s->cpu_run_real_total_val_acc)
 			continue;
-		if (params.samplerate == 1000 && s->exited) // do not show exited processes in batch view
+		if (params.samplerate==1000&&s->exited) /* do not show exited processes in batch view */
 			continue;
 
 		humanize_val(&read_val,read_str,1);
 		humanize_val(&write_val,write_str,1);
 		humanize_val(&canceled_val,canceled_str,1);
 		humanize_val(&coremem_val,coremem_str,1);
-		
 
 		pw_name=u8strpadt(s->pw_name,10);
 
-		/* ac_*time_val_acc are not guaranteed multiples of 1000; never deref a NULL tm* */
-		{
-			struct tm *ptm = GetTimeAndDate(s->ac_utime_val_acc);
-			if (ptm)
-				snprintf(utime, sizeof utime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-			else
-				snprintf(utime, sizeof utime, "??:??:??");
+		/* Never dereference a NULL tm* (GetTimeAndDate is always valid now, but keep guard). */
+		ptm=GetTimeAndDate(s->ac_utime_val_acc);
+		if (ptm)
+			snprintf(utime,sizeof utime,"%02d:%02d:%02d",ptm->tm_hour,ptm->tm_min,ptm->tm_sec);
+		else
+			snprintf(utime,sizeof utime,"??:??:??");
 
-			ptm = GetTimeAndDate(s->ac_stime_val_acc);
-			if (ptm)
-				snprintf(stime, sizeof stime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-			else
-				snprintf(stime, sizeof stime, "??:??:??");
-		}
+		ptm=GetTimeAndDate(s->ac_stime_val_acc);
+		if (ptm)
+			snprintf(stime,sizeof stime,"%02d:%02d:%02d",ptm->tm_hour,ptm->tm_min,ptm->tm_sec);
+		else
+			snprintf(stime,sizeof stime,"??:??:??");
 
-		printf("%6i %6i %6i %4s %s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4i %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
-			s->pid, s->tid, s->ac_ppid,str_ioprio(s->io_prio),pw_name?pw_name:"(null)",read_val,read_str,write_val,write_str,
-			canceled_val,canceled_str,coremem_val,coremem_str,mf_val,s->swapin_val,s->blkio_val,s->cpu_delay_total_val,utime, stime,
-			s->cmdline1?s->cmdline1:"(unknown)");
-
-		/*
-		ptm = GetTimeAndDate(s->cpu_run_real_total_val_acc);
-		if(ptm){
-			sprintf(rtime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-			printf("REAL TIME: %8s\n", rtime);
-		}
-
-		ptm = GetTimeAndDate(s->cpu_run_virtual_total_val_acc);
-		if(ptm){
-			sprintf(vtime, "%02d:%02d:%02d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
-			printf("VIRT TIME: %8s\n",vtime);
-		}
-		*/
+		printf("%6i %6i %6i %4s %s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %7.2f %-3.3s %4llu %6.2f %% %6.2f %% %6.2f %% %8s %8s %s\n",
+			s->pid,s->tid,(int)s->ac_ppid,str_ioprio(s->io_prio),pw_name?pw_name:"(null)",
+			read_val,read_str,write_val,write_str,
+			canceled_val,canceled_str,coremem_val,coremem_str,
+			(unsigned long long)mf_val,s->swapin_val,s->blkio_val,s->cpu_delay_total_val,
+			utime,stime,s->cmdline1?s->cmdline1:"(unknown)");
 
 		reset_pid(s);
 		if (pw_name)
 			free(pw_name);
-		//free(utime);
-		//free(stime);
 	}
 }
 
@@ -174,76 +173,102 @@ inline void reset_pid(struct xxxid_stats *cs){
 
 void view_batch_loop(void) {
 	struct xxxid_stats_arr *ps=arr_alloc();
-	struct xxxid_stats_arr *cs=arr_alloc();
+	struct xxxid_stats_arr *cs=NULL;
 	struct act_stats act={0};
-	int iters = 0;
-	int rests = 0;
-	int flush = 0;
+	int iters=0;
+	int rests=0;
+	int flush=0;
 	double time_s;
-	double t_delay = 1.0 * params.delay;
-	double time_diff = 0;
-	uint64_t sampler_rate = params.samplerate;
-	uint64_t t_quick_diff = 0;
-	uint64_t next_print = 0;
+	double time_diff=0;
+	uint64_t sampler_rate=params.samplerate;
+	uint64_t t_quick_diff=0;
+	uint64_t next_print=0;
 	/* Cache of last main-process pointer for pid_cb; not an owned stats object. */
-	struct xxxid_stats *p = NULL;
+	struct xxxid_stats *p=NULL;
 	int diff_len=0;
 	int new_pids=0;
 	int untracked=0;
 	int ppid_miss=0;
+
+	if (!ps) {
+		fprintf(stderr,"view_batch_loop: out of memory\n");
+		return;
+	}
+
 	for (;;) {
 		/* Reset cache each sample; pointers into the previous array are invalid after arr_free. */
-		p = NULL;
-		cs = fetch_batch_data(&p);
-		
+		p=NULL;
+		cs=fetch_batch_data(&p);
+		if (!cs) {
+			fprintf(stderr,"view_batch_loop: fetch_batch_data failed\n");
+			msleep(params.samplerate>0?params.samplerate:100);
+			continue;
+		}
+
 		act.ts_c=monotime();
-		if(!next_print) next_print = act.ts_c + params.delay * 1000;
-		//printf("TIMEDIFF %i \n", act.ts_c);
-		if(act.ts_c >= next_print) {
+		if (!next_print)
+			next_print=act.ts_c+params.delay*1000;
+
+		if (act.ts_c>=next_print) {
 			time_s=TIMEDIFF_IN_S(act.ts_r,act.ts_c);
-			time_diff += time_s;
-			diff_len=create_quick_diff(cs,ps,time_s,NULL,0,NULL, 1, &new_pids, &untracked, &ppid_miss);
+			time_diff+=time_s;
+			diff_len=create_quick_diff(cs,ps,time_s,NULL,0,NULL,1,&new_pids,&untracked,&ppid_miss);
 			get_vm_counters(&act.read_bytes,&act.write_bytes);
-			printf("Samples=%i, Rests=%i, NewPIDs=%i, Miss=%i, PPIDMiss=%i, ArrLength=%i, Size=%i, Time Taken: %2.1f sec\n", iters, rests, new_pids, ppid_miss, untracked, (ps&&ps->arr) ?  ps->length : 0, (ps&&ps->arr) ?  ps->size : 0, time_diff);
-			
-			view_batch(cs,ps,&act,diff_len, time_diff);
+			printf("Samples=%i, Rests=%i, NewPIDs=%i, Miss=%i, PPIDMiss=%i, ArrLength=%i, Size=%i, Time Taken: %2.1f sec\n",
+				iters,rests,new_pids,ppid_miss,untracked,
+				(ps&&ps->arr)?ps->length:0,
+				(ps&&ps->arr)?ps->size:0,
+				time_diff);
+
+			view_batch(cs,ps,&act,diff_len,time_diff);
+
+			/*
+			 * Critical for log shippers / pipes: deliver a full sample block
+			 * before sleeping (Tomas-M 1.30+). Also keeps stderr warnings from
+			 * interleaving mid-line with unflushed stdout.
+			 */
+			fflush(stdout);
+
 			act.have_o=1;
-			iters = rests = 0;
-			time_diff = 0;
-			flush = 0;
-			new_pids = 0;
+			iters=rests=0;
+			time_diff=0;
+			flush=0;
+			new_pids=0;
 			untracked=0;
-			//next_print = monotime() + params.delay * 1000;
+			ppid_miss=0;
 			if ((params.iter>-1)&&((--params.iter)==0))
 				break;
 		} else {
 			time_s=TIMEDIFF_IN_S(act.ts_r,act.ts_c);
-			time_diff += time_s;
-			create_quick_diff(cs,ps,time_s,NULL,0,NULL,flush, &new_pids, &untracked, &ppid_miss);
+			time_diff+=time_s;
+			create_quick_diff(cs,ps,time_s,NULL,0,NULL,flush,&new_pids,&untracked,&ppid_miss);
 			flush+=40000;
-			
+		}
 
-		}
-		t_quick_diff = monotime();
-		if(iters == 0){
-			act.ts_o = act.ts_c;
+		t_quick_diff=monotime();
+		if (iters==0) {
+			act.ts_o=act.ts_c;
 			act.read_bytes_o=act.read_bytes;
-			act.write_bytes_o=act.write_bytes;		
-			next_print = t_quick_diff + params.delay * 1000;
+			act.write_bytes_o=act.write_bytes;
+			next_print=t_quick_diff+params.delay*1000;
 		}
-		act.ts_r = act.ts_c;
+		act.ts_r=act.ts_c;
+
 		if (ps)
 			arr_free(ps);
-
 		ps=cs;
-		
-		if((t_quick_diff - act.ts_c)  < (sampler_rate)) {
-			// only winners rest
+		cs=NULL;
+
+		if ((t_quick_diff-act.ts_c)<sampler_rate) {
+			/* only winners rest */
 			msleep(params.samplerate);
 			rests++;
 		}
 		iters++;
 	}
-	arr_free(cs);
+	if (cs)
+		arr_free(cs);
+	if (ps)
+		arr_free(ps);
 }
 

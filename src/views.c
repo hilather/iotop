@@ -182,15 +182,19 @@ int create_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double tim
 }
 
 inline void humanize_val(double *value,char *str,int allow_accum) {
-	const char *u="BKMGTPEZY";
+	static const char u[]="BKMGTPEZY";
+	const size_t ulen=sizeof u-1;
 	size_t p=0;
+
+	if (!value||!str)
+		return;
 
 	if (config.f.kilobytes) {
 		p=1;
 		*value/=1000.0;
 	} else {
 		while (*value>10000) {
-			if (p+1<strlen(u)) {
+			if (p+1<ulen) {
 				*value/=1000.0;
 				p++;
 			} else
@@ -202,15 +206,19 @@ inline void humanize_val(double *value,char *str,int allow_accum) {
 }
 
 inline void humanize_valavg(double *value,char *str,int allow_accum) {
-	const char *u="BKMGTPEZY";
+	static const char u[]="BKMGTPEZY";
+	const size_t ulen=sizeof u-1;
 	size_t p=0;
+
+	if (!value||!str)
+		return;
 
 	if (config.f.kilobytes) {
 		p=1;
 		*value/=1000.0;
 	} else {
 		while (*value>10000) {
-			if (p+1<strlen(u)) {
+			if (p+1<ulen) {
 				*value/=1000.0;
 				p++;
 			} else
@@ -223,40 +231,48 @@ inline void humanize_valavg(double *value,char *str,int allow_accum) {
 
 int create_quick_diff(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps,double time_s,filter_callback_w cb,int width,int *cnt, int flush, int *new_pids, int *untracked, int *ppid_miss) {
 	int n=0;
-	struct xxxid_stats *p = NULL;
-	struct xxxid_stats *temp_p = NULL;
+	struct xxxid_stats *p=NULL;
+
+	(void)cb;
+	(void)width;
+
 	if (cnt)
 		*cnt=0;
-	for (n=0;cs->arr&&n<cs->length;n++) {
-		struct xxxid_stats *c;
-		
-		double rv,wv,cw;
-		char temp[12];
+	if (!cs)
+		return 0;
+	/* Guard optional counters so callers can pass NULL. */
+	if (time_s<=0.0)
+		time_s=0.0001;
 
-		c=cs->arr[n];
-		//arr_find sucks, replace it with fixed sized arrays
+	for (n=0;cs->arr&&n<cs->length;n++) {
+		struct xxxid_stats *c=cs->arr[n];
+
+		if (!c)
+			continue;
+
 		p=arr_find(ps,c->tid);
-		if (!p) { // new process or task
-			(*new_pids)++;
-			initialize_pid_values(c, flush);
+		if (!p) { /* new process or task */
+			if (new_pids)
+				(*new_pids)++;
+			initialize_pid_values(c,flush);
 			continue;
 		}
-		// avoid diffing processes that might not be the same
-		// Its possible for the new process to inheret the recycled PID
-		// its also possible that the PPID changes due to detaching from its original parent
-		// Best to err on the side of caution until elapse time diffing is in place
-		if(p->ac_ppid != c->ac_ppid && p->ac_btime != c->ac_btime){
-			(*ppid_miss)++;
-			initialize_pid_values(c, flush);
-			continue;		
+		/*
+		 * Avoid diffing processes that might not be the same: recycled PID
+		 * or reparenting. Prefer elapse-time identity later; for now skip.
+		 */
+		if (p->ac_ppid!=c->ac_ppid&&p->ac_btime!=c->ac_btime) {
+			if (ppid_miss)
+				(*ppid_miss)++;
+			initialize_pid_values(c,flush);
+			continue;
 		}
-		//rename samples/flush to first seen eventualls
 		p->samples=flush;
-		p->exited = 0;
-		perform_delta_accounting(c, p, time_s);
+		p->exited=0;
+		perform_delta_accounting(c,p,time_s);
 	}
-	
-	copy_old_processes(cs, ps, flush, untracked);
+
+	copy_old_processes(cs,ps,flush,untracked);
 	// reattach exited threads back to their original process
 	/*
 	 //Only want by pid? 
@@ -423,31 +439,20 @@ void perform_delta_accounting(struct xxxid_stats *c, struct xxxid_stats *p, doub
 
 inline void copy_old_processes(struct xxxid_stats_arr *cs,struct xxxid_stats_arr *ps, int flush, int *untracked){
 	int n=0;
-	for (n=0;ps&&ps->arr&&n<ps->length;n++) { // copy old data for exited processes
-		/*
-		if(ps->arr[n]->exited == 10000){
-			ps->arr[n]->exited = 0;
-			continue;
-		}
 
-		if(ps->arr[n]->samples == flush){
-			//we iterated over this earlier
+	if (!cs||!ps||!ps->arr)
+		return;
+
+	for (n=0;n<ps->length;n++) { /* copy old data for exited processes */
+		if (!ps->arr[n])
 			continue;
-		}
-		
-		if(!flush && ps->arr[n]->exited > (HISTORY_CNT-1)){
-			ps->arr[n]->exited++;
-			continue;
-		}
-		*/
-		
-		//if (ps->arr[n]->exited || !arr_find(cs,ps->arr[n]->tid)) {
-		
-		if (ps->arr[n]->samples != flush) {
+
+		if (ps->arr[n]->samples!=flush) {
 			struct xxxid_stats *p;
 
-			if(!ps->arr[n]->diffs){
-				(*untracked)++;
+			if (!ps->arr[n]->diffs) {
+				if (untracked)
+					(*untracked)++;
 				continue;
 			}
 			ps->arr[n]->exited++;
