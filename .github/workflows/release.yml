@@ -67,7 +67,11 @@ jobs:
               set -euo pipefail
               dnf -y install gcc make pkgconfig ncurses-devel binutils file which
               ./scripts/ci/build-rocky8.sh
+              test -x ./dist/iotop-perf
+              ls -la dist/
             '
+          sudo chown -R "$(id -u):$(id -g)" dist || true
+          ls -la dist/
 
       - name: Package release assets
         id: pkg
@@ -75,7 +79,12 @@ jobs:
           set -euo pipefail
           VER="${{ steps.ver.outputs.header_version }}"
           NAME="iotop-perf-${VER}-rocky8.x86_64"
-          test -f "dist/${NAME}"
+          echo "Looking for dist/${NAME}"
+          ls -la dist/ || true
+          if [[ ! -f "dist/${NAME}" ]]; then
+            echo "::error::Missing dist/${NAME} after Rocky 8 build"
+            exit 1
+          fi
           tar -C dist -czf "dist/${NAME}.tar.gz" \
             "${NAME}" SHA256SUMS BUILDINFO.txt
           (

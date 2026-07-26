@@ -11,13 +11,22 @@ VERSION="$(grep -E '^#define VERSION ' src/iotop.h | sed -E 's/.*"([^"]+)".*/\1/
 OUT_DIR="${OUT_DIR:-dist}"
 NAME="${PRODUCT}-${VERSION}-rocky8.x86_64"
 
+if [[ -z "${PRODUCT}" || -z "${VERSION}" ]]; then
+  echo "error: failed to parse PRODUCT_NAME/VERSION from src/iotop.h" >&2
+  exit 1
+fi
+
+echo "Building ${PRODUCT} ${VERSION} -> ${OUT_DIR}/${NAME}"
+
 mkdir -p "$OUT_DIR"
 make clean
-make -j"$(nproc)" NO_FLTO=1 CFLAGS="-O3 -g -fno-omit-frame-pointer" V=1
+make -j"$(nproc 2>/dev/null || echo 2)" NO_FLTO=1 CFLAGS="-O3 -g -fno-omit-frame-pointer" V=1
+test -x "./${PRODUCT}"
 strip --strip-unneeded "${PRODUCT}" 2>/dev/null || strip "${PRODUCT}"
 
 cp -a "${PRODUCT}" "${OUT_DIR}/${NAME}"
 cp -a "${PRODUCT}" "${OUT_DIR}/${PRODUCT}"
+chmod a+rX "${OUT_DIR}/${NAME}" "${OUT_DIR}/${PRODUCT}" || true
 
 (
   cd "$OUT_DIR"

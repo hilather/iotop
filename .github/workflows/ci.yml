@@ -33,9 +33,13 @@ jobs:
               set -euo pipefail
               dnf -y install gcc make pkgconfig ncurses-devel binutils file which
               ./scripts/ci/build-rocky8.sh
-              ./dist/iotop -v
-              ./dist/iotop -h | head -5
+              test -x ./dist/iotop-perf
+              ./dist/iotop-perf -v
+              ./dist/iotop-perf -h | head -8
+              ls -la dist/
             '
+          # Ensure host runner can read docker-created artifacts
+          sudo chown -R "$(id -u):$(id -g)" dist || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
