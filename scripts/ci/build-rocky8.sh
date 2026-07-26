@@ -1,34 +1,31 @@
 #!/usr/bin/env bash
-# Build a release-style iotop binary for Rocky Linux 8 (el8/x86_64).
+# Build a release-style iotop-perf binary for Rocky Linux 8 (el8/x86_64).
 # Intended for GitHub Actions and local parity with CI.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+PRODUCT="$(grep -E '^#define PRODUCT_NAME ' src/iotop.h | sed -E 's/.*"([^"]+)".*/\1/')"
 VERSION="$(grep -E '^#define VERSION ' src/iotop.h | sed -E 's/.*"([^"]+)".*/\1/')"
 OUT_DIR="${OUT_DIR:-dist}"
-NAME="iotop-${VERSION}-rocky8.x86_64"
+NAME="${PRODUCT}-${VERSION}-rocky8.x86_64"
 
 mkdir -p "$OUT_DIR"
 make clean
-# Match el8-friendly flags used in our Docker debug env for releases:
-# NO_FLTO for broader toolchain stability; -O3 for production speed.
 make -j"$(nproc)" NO_FLTO=1 CFLAGS="-O3 -g -fno-omit-frame-pointer" V=1
-strip --strip-unneeded iotop 2>/dev/null || strip iotop
+strip --strip-unneeded "${PRODUCT}" 2>/dev/null || strip "${PRODUCT}"
 
-cp -a iotop "${OUT_DIR}/${NAME}"
-# Also ship a plain name for convenience
-cp -a iotop "${OUT_DIR}/iotop"
+cp -a "${PRODUCT}" "${OUT_DIR}/${NAME}"
+cp -a "${PRODUCT}" "${OUT_DIR}/${PRODUCT}"
 
-# Checksums
 (
   cd "$OUT_DIR"
-  sha256sum "${NAME}" iotop > SHA256SUMS
+  sha256sum "${NAME}" "${PRODUCT}" > SHA256SUMS
 )
 
-# Metadata
 {
+  echo "product=${PRODUCT}"
   echo "name=${NAME}"
   echo "version=${VERSION}"
   echo "target=rocky8.x86_64"
@@ -39,10 +36,10 @@ cp -a iotop "${OUT_DIR}/iotop"
     echo "ncurses=$(rpm -q ncurses-libs 2>/dev/null || true)"
   fi
   echo "ldd:"
-  ldd iotop 2>/dev/null | sed 's/^/  /' || true
+  ldd "${PRODUCT}" 2>/dev/null | sed 's/^/  /' || true
 } | tee "${OUT_DIR}/BUILDINFO.txt"
 
 echo
 echo "Built ${OUT_DIR}/${NAME}"
-./iotop -v || true
+"./${PRODUCT}" -v || true
 file "${OUT_DIR}/${NAME}" 2>/dev/null || true

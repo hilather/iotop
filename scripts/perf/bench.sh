@@ -19,7 +19,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="${IOTOP:-${ROOT}/iotop}"
+BIN="${IOTOP:-${ROOT}/iotop-perf}"
 ITERS="${ITERS:-5}"
 DELAY="${DELAY:-1}"
 SAMPLE="${SAMPLE:-100}"

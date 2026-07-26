@@ -27,7 +27,10 @@ You should have received a copy of the GNU General Public License along with thi
 #include <sys/types.h>
 #include <stdint.h>
 
+/* Product identity for this fork (distinct from upstream iotop-c). */
+#define PRODUCT_NAME "iotop-perf"
 #define VERSION "1.18.0"
+#define VERSION_EXTRA "hilather/perf"
 
 /*
  * Kernel taskstats ABI (see Tomas-M/iotop 1.29+).

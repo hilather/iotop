@@ -53,14 +53,24 @@ inline void init_params(void) {
 
 static const char str_opt[]="boPaktqc123456789x";
 
+static inline void print_version(void) {
+	printf("%s %s (%s)\n", PRODUCT_NAME, VERSION, VERSION_EXTRA);
+}
+
 static inline void print_help(void) {
 	printf(
 		"Usage: %s [OPTIONS]\n\n"
+		"%s %s — performance-oriented fork of iotop-c (hilather/iotop).\n"
+		"Not the distro/upstream iotop; binary name is %s.\n\n"
 		"DISK READ and DISK WRITE are the block I/O bandwidth used during the sampling\n"
 		"period. SWAPIN and IO are the percentages of time the thread spent respectively\n"
 		"while swapping in and waiting on I/O more generally. PRIO is the I/O priority\n"
 		"at which the thread is running (set using the ionice command).\n\n"
-		"Options:\n"
+		"Options:\n",
+		progname, PRODUCT_NAME, VERSION, PRODUCT_NAME
+	);
+	printf(
+
 		"  -v, --version         show program's version number and exit\n"
 		"  -h, --help            show this help message and exit\n"
 		"  -o, --only            only show processes or threads actually doing I/O\n"
@@ -90,8 +100,7 @@ static inline void print_help(void) {
 		"  -8, --hide-graph      hide GRAPH column\n"
 		"  -9, --hide-command    hide COMMAND column\n"
 		"  -q, --quiet           suppress some lines of header (implies --batch)\n"
-		"  -x, --dead-x          show dead processes/threads with letter x\n",
-		progname
+		"  -x, --dead-x          show dead processes/threads with letter x\n"
 	);
 }
 
@@ -151,7 +160,7 @@ static inline void parse_args(int argc,char *argv[]) {
 
 		switch (c) {
 			case 'v':
-				printf("%s %s\n",argv[0],VERSION);
+				print_version();
 				exit(EXIT_SUCCESS);
 			case 'h':
 				print_help();

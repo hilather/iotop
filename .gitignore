@@ -1,5 +1,6 @@
 bld/*
 *.swp
 iotop
+iotop-perf
 scripts/perf/results/
 dist/

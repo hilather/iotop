@@ -40,10 +40,9 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: iotop-rocky8-${{ github.sha }}
+          name: iotop-perf-rocky8-${{ github.sha }}
           path: |
-            dist/iotop-*
-            dist/iotop
+            dist/iotop-perf*
             dist/SHA256SUMS
             dist/BUILDINFO.txt
           if-no-files-found: error

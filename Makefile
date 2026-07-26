@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 #
 
-TARGET=iotop
+TARGET=iotop-perf
 
 SRCS:=$(wildcard src/*.c)
 OBJS:=$(patsubst %c,%o,$(patsubst src/%,bld/%,$(SRCS)))
@@ -78,11 +78,12 @@ install: $(TARGET)
 	$(Q)$(STRIP) $(TARGET)
 	$(E) INSTALL $(TARGET)
 	$(Q)install -TD -m 0755 $(TARGET) $(PREFIX)/sbin/$(TARGET)
-	$(Q)install -TD -m 0644 iotop.8 $(PREFIX)/share/man/man8/iotop.8
+	$(Q)install -TD -m 0644 iotop.8 $(PREFIX)/share/man/man8/iotop-perf.8
 
 uninstall:
 	$(E) UNINSTALL $(TARGET)
-	$(Q)rm $(PREFIX)/sbin/$(TARGET)
+	$(Q)rm -f $(PREFIX)/sbin/$(TARGET)
+	$(Q)rm -f $(PREFIX)/share/man/man8/iotop-perf.8
 
 bld/.mkdir:
 	$(Q)mkdir -p bld

@@ -74,9 +74,8 @@ jobs:
         run: |
           set -euo pipefail
           VER="${{ steps.ver.outputs.header_version }}"
-          NAME="iotop-${VER}-rocky8.x86_64"
+          NAME="iotop-perf-${VER}-rocky8.x86_64"
           test -f "dist/${NAME}"
-          # tarball for distribution
           tar -C dist -czf "dist/${NAME}.tar.gz" \
             "${NAME}" SHA256SUMS BUILDINFO.txt
           (
@@ -91,30 +90,33 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: iotop ${{ steps.ver.outputs.header_version }}
+          name: iotop-perf ${{ steps.ver.outputs.header_version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            dist/iotop-*-rocky8.x86_64
-            dist/iotop-*-rocky8.x86_64.tar.gz
+            dist/iotop-perf-*-rocky8.x86_64
+            dist/iotop-perf-*-rocky8.x86_64.tar.gz
             dist/SHA256SUMS
             dist/BUILDINFO.txt
           body: |
-            ## iotop ${{ steps.ver.outputs.header_version }} (Rocky Linux 8)
+            ## iotop-perf ${{ steps.ver.outputs.header_version }} (Rocky Linux 8)
+
+            Performance-oriented fork of iotop-c (`hilather/iotop`).  
+            Binary name: **`iotop-perf`** (not distro `iotop`).
 
             Prebuilt **x86_64** binary linked against Rocky Linux 8 (el8) glibc/ncurses.
 
             ### Install
 
             ```bash
-            # from release assets
-            tar xzf iotop-${{ steps.ver.outputs.header_version }}-rocky8.x86_64.tar.gz
-            sudo install -m 0755 iotop-${{ steps.ver.outputs.header_version }}-rocky8.x86_64 /usr/local/sbin/iotop
+            tar xzf iotop-perf-${{ steps.ver.outputs.header_version }}-rocky8.x86_64.tar.gz
+            sudo dnf install -y ncurses-libs
+            sudo install -m 0755 iotop-perf-${{ steps.ver.outputs.header_version }}-rocky8.x86_64 /usr/local/sbin/iotop-perf
             ```
 
             Runtime deps on Rocky 8:
             - `glibc` (el8)
-            - `ncurses-libs` (provides libncursesw / libtinfo)
+            - `ncurses-libs` (libncursesw / libtinfo)
 
             ```bash
             sudo dnf install -y ncurses-libs
@@ -124,7 +126,8 @@ jobs:
 
             ```bash
             sha256sum -c SHA256SUMS
-            ./iotop-${{ steps.ver.outputs.header_version }}-rocky8.x86_64 -v
+            ./iotop-perf-${{ steps.ver.outputs.header_version }}-rocky8.x86_64 -v
+            # expect: iotop-perf ${{ steps.ver.outputs.header_version }} (hilather/perf)
             ```
 
             Requires root or `CAP_NET_ADMIN` for live sampling.

@@ -12,8 +12,8 @@ build_debug() {
   echo "==> Building debug iotop (NO_FLTO=1, -O0 -g)"
   make clean >/dev/null 2>&1 || true
   make V=1 NO_FLTO=1 CFLAGS="-O0 -g -fno-omit-frame-pointer -Wall -Wextra"
-  echo "==> Built: $(pwd)/iotop"
-  file ./iotop || true
+  echo "==> Built: $(pwd)/iotop-perf"
+  file ./iotop-perf || true
 }
 
 build_asan() {
@@ -22,7 +22,7 @@ build_asan() {
   make V=1 NO_FLTO=1 \
     CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" \
     LDFLAGS="-fsanitize=address,undefined"
-  echo "==> Built ASan binary: $(pwd)/iotop"
+  echo "==> Built ASan binary: $(pwd)/iotop-perf"
 }
 
 run_batch() {
@@ -31,7 +31,7 @@ run_batch() {
   local sample="${3:-200}"
   echo "==> Running batch mode: -b -n $iters -d $delay -s $sample"
   # CAP_NET_ADMIN / privileged needed for taskstats netlink on host proc.
-  ./iotop -b -n "$iters" -d "$delay" -s "$sample" -t || true
+  ./iotop-perf -b -n "$iters" -d "$delay" -s "$sample" -t || true
 }
 
 run_stress() {
@@ -42,7 +42,7 @@ run_stress() {
   for i in $(seq 1 "$rounds"); do
     echo "--- stress round $i/$rounds ---"
     # Short delay, fast sample rate, few prints — churns process list hard.
-    if ! ./iotop -b -n 2 -d 1 -s "$sample" -q; then
+    if ! ./iotop-perf -b -n 2 -d 1 -s "$sample" -q; then
       echo "iotop exited non-zero (or crashed) on round $i" >&2
       return 1
     fi
@@ -56,13 +56,13 @@ run_gdb() {
       -ex 'run -b -n 20 -d 1 -s 100 -t' \
       -ex 'bt full' \
       -ex 'info registers' \
-      --args ./iotop
+      --args ./iotop-perf
 }
 
 run_valgrind() {
   echo "==> Valgrind memcheck (batch, 5 iters) — slow"
   valgrind --error-exitcode=99 --leak-check=full --track-origins=yes \
-    ./iotop -b -n 5 -d 1 -s 200 -t
+    ./iotop-perf -b -n 5 -d 1 -s 200 -t
 }
 
 run_asan() {
@@ -70,7 +70,7 @@ run_asan() {
   echo "==> Running ASan binary"
   ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
   UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-    ./iotop -b -n 10 -d 1 -s 100 -t
+    ./iotop-perf -b -n 10 -d 1 -s 100 -t
 }
 
 cmd_help() {
@@ -129,19 +129,19 @@ main() {
     build) build_debug ;;
     build-asan) build_asan ;;
     run)
-      [[ -x ./iotop ]] || build_debug
+      [[ -x ./iotop-perf ]] || build_debug
       run_batch "${1:-5}" "${2:-1}" "${3:-200}"
       ;;
     stress)
-      [[ -x ./iotop ]] || build_debug
+      [[ -x ./iotop-perf ]] || build_debug
       run_stress "${1:-50}" "${2:-100}"
       ;;
     gdb)
-      [[ -x ./iotop ]] || build_debug
+      [[ -x ./iotop-perf ]] || build_debug
       run_gdb
       ;;
     valgrind)
-      [[ -x ./iotop ]] || build_debug
+      [[ -x ./iotop-perf ]] || build_debug
       run_valgrind
       ;;
     asan) run_asan ;;
